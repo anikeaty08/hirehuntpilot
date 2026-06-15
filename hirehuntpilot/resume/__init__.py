@@ -1,0 +1,1 @@
+"""Resume helpers for HireHuntPilot."""

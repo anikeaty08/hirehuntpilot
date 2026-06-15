@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hirehuntpilot"
+version = "0.1.0"
+description = "Local multi-agent orchestrator for job discovery and applications."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+  { name = "OpenAI Codex" }
+]
+dependencies = [
+  "anthropic",
+  "cryptography",
+  "google-generativeai",
+  "groq",
+  "hirehunt",
+  "jinja2",
+  "openai",
+  "playwright",
+  "pymupdf",
+  "pyyaml",
+  "rendercv[full]>=2.8",
+  "requests",
+  "rich",
+  "typer[all]",
+]
+
+[project.optional-dependencies]
+notify = [
+  "python-telegram-bot",
+  "twilio",
+]
+sheets = [
+  "google-auth",
+  "gspread",
+]
+
+[project.scripts]
+hirehuntpilot = "hirehuntpilot.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hirehuntpilot"]
