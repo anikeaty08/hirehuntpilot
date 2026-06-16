@@ -8,7 +8,8 @@ from hirehuntpilot.ai.adapter import AIAdapter
 from hirehuntpilot.browser.session import BrowserSessionManager
 from hirehuntpilot.config import ConfigManager, app_home
 from hirehuntpilot.integrations.hirehunt_client import HireHuntClient
-from hirehuntpilot.integrations.sheets import SheetsTracker
+from hirehuntpilot.integrations.tracker import LocalTracker
+from hirehuntpilot.portals import available_portals
 
 
 @dataclass(slots=True)
@@ -47,13 +48,12 @@ def run_doctor(config_manager: ConfigManager | None = None) -> list[CheckResult]
 
     browser = BrowserSessionManager()
     results.append(CheckResult("playwright available", browser.playwright_available(), "playwright import"))
-    for portal in ["naukri", "internshala"]:
+    for portal in available_portals():
         ok, detail = browser.portal_session_valid(portal)
         results.append(CheckResult(f"{portal} session", ok, detail))
 
-    sheets = SheetsTracker(config.sheets.spreadsheet_id, config.sheets.service_account_json_path)
-    ok, detail = sheets.check_connection()
-    results.append(CheckResult("google sheets", ok, detail))
+    ok, detail = LocalTracker().check_connection()
+    results.append(CheckResult("local tracker", ok, detail))
     ok, detail = AIAdapter(config.ai).healthcheck()
     results.append(CheckResult("ai provider", ok, detail))
 

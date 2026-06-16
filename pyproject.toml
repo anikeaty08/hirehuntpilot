@@ -34,13 +34,10 @@ notify = [
   "python-telegram-bot",
   "twilio",
 ]
-sheets = [
-  "google-auth",
-  "gspread",
-]
 
 [project.scripts]
-hirehuntpilot = "hirehuntpilot.cli:app"
+hirehuntpilot = "hirehuntpilot.cli:main"
+hirepilot = "hirehuntpilot.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["hirehuntpilot"]

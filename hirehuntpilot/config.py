@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from hirehuntpilot.compat import dump_data, load_data
+from hirehuntpilot.portals import available_portals
 
 try:  # pragma: no cover - optional dependency path
     from cryptography.fernet import Fernet
@@ -52,6 +53,7 @@ def ensure_app_dirs() -> dict[str, Path]:
     root = app_home()
     directories = {
         "root": root,
+        "database": root / "database",
         "sessions": root / "sessions",
         "resumes": root / "resumes",
         "screenshots": root / "screenshots",
@@ -100,7 +102,7 @@ class PreferencesConfig:
     salary_min: int = 0
     job_type: str = "job"
     work_mode: str = "any"
-    sources: list[str] = field(default_factory=lambda: ["naukri", "internshala"])
+    sources: list[str] = field(default_factory=lambda: ["naukri", "internshala", "linkedin", "indeed", "unstop", "shine"])
     exclude_keywords: list[str] = field(default_factory=list)
     exclude_companies: list[str] = field(default_factory=list)
 
@@ -128,14 +130,25 @@ class WhatsAppConfig:
 
 
 @dataclass(slots=True)
-class SheetsConfig:
-    spreadsheet_id: str = ""
-    service_account_json_path: str = ""
+class SetupStepState:
+    status: str = "pending"
+    detail: str = ""
+
+
+@dataclass(slots=True)
+class SetupState:
+    profile: SetupStepState = field(default_factory=SetupStepState)
+    resume: SetupStepState = field(default_factory=SetupStepState)
+    ai: SetupStepState = field(default_factory=SetupStepState)
+    notifications: SetupStepState = field(default_factory=SetupStepState)
+    portals: dict[str, SetupStepState] = field(
+        default_factory=lambda: {portal: SetupStepState() for portal in available_portals()}
+    )
 
 
 @dataclass(slots=True)
 class RuntimeConfig:
-    sqlite_path: str = str(app_home() / "runtime.db")
+    sqlite_path: str = str(app_home() / "database" / "runtime.db")
 
 
 @dataclass(slots=True)
@@ -145,14 +158,11 @@ class AppConfig:
     resume: ResumeConfig = field(default_factory=ResumeConfig)
     preferences: PreferencesConfig = field(default_factory=PreferencesConfig)
     portals: dict[str, PortalCredentials] = field(
-        default_factory=lambda: {
-            "naukri": PortalCredentials(),
-            "internshala": PortalCredentials(),
-        }
+        default_factory=lambda: {portal: PortalCredentials() for portal in available_portals()}
     )
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     whatsapp: WhatsAppConfig = field(default_factory=WhatsAppConfig)
-    sheets: SheetsConfig = field(default_factory=SheetsConfig)
+    setup: SetupState = field(default_factory=SetupState)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -160,18 +170,24 @@ class AppConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AppConfig":
+        portal_keys = available_portals()
+        raw_portals = data.get("portals", {})
+        raw_setup_portals = data.get("setup", {}).get("portals", {})
         return cls(
             personal=PersonalConfig(**data.get("personal", {})),
             ai=AIConfig(**data.get("ai", {})),
             resume=ResumeConfig(**data.get("resume", {})),
             preferences=PreferencesConfig(**data.get("preferences", {})),
-            portals={
-                "naukri": PortalCredentials(**data.get("portals", {}).get("naukri", {})),
-                "internshala": PortalCredentials(**data.get("portals", {}).get("internshala", {})),
-            },
+            portals={portal: PortalCredentials(**raw_portals.get(portal, {})) for portal in portal_keys},
             telegram=TelegramConfig(**data.get("telegram", {})),
             whatsapp=WhatsAppConfig(**data.get("whatsapp", {})),
-            sheets=SheetsConfig(**data.get("sheets", {})),
+            setup=SetupState(
+                profile=SetupStepState(**data.get("setup", {}).get("profile", {})),
+                resume=SetupStepState(**data.get("setup", {}).get("resume", {})),
+                ai=SetupStepState(**data.get("setup", {}).get("ai", {})),
+                notifications=SetupStepState(**data.get("setup", {}).get("notifications", {})),
+                portals={portal: SetupStepState(**raw_setup_portals.get(portal, {})) for portal in portal_keys},
+            ),
             runtime=RuntimeConfig(**data.get("runtime", {})),
         )
 
@@ -209,14 +225,22 @@ class ConfigManager:
     def update(self, section: str, data: dict[str, Any]) -> AppConfig:
         config = self.load()
         current = getattr(config, section)
-        if hasattr(current, "__dict__"):
-            for key, value in data.items():
-                setattr(current, key, value)
-        elif isinstance(current, dict):
-            for key, value in data.items():
-                current[key] = value
+        self._merge_value(current, data)
+        self.save(config)
+        return config
+
+    def set_setup_step(self, step: str, *, status: str, detail: str = "") -> AppConfig:
+        config = self.load()
+        target = config.setup
+        if "." in step:
+            root, leaf = step.split(".", 1)
+            target = getattr(target, root)
+            if isinstance(target, dict):
+                target[leaf] = SetupStepState(status=status, detail=detail)
+            else:
+                setattr(target, leaf, SetupStepState(status=status, detail=detail))
         else:
-            setattr(config, section, data)
+            setattr(target, step, SetupStepState(status=status, detail=detail))
         self.save(config)
         return config
 
@@ -225,12 +249,11 @@ class ConfigManager:
         data = config.to_dict()
         sensitive = {
             ("ai", "api_key"),
-            ("portals", "naukri", "password"),
-            ("portals", "internshala", "password"),
             ("telegram", "bot_token"),
             ("whatsapp", "auth_token"),
             ("whatsapp", "account_sid"),
         }
+        sensitive.update({("portals", portal, "password") for portal in available_portals()})
         for path in sensitive:
             target: Any = data
             for key in path[:-1]:
@@ -258,10 +281,14 @@ class ConfigManager:
     def bootstrap_defaults(self) -> AppConfig:
         config = self.default()
         root = app_home()
-        config.resume.json_path = str(root / "resume.json")
-        config.resume.base_pdf_path = str(root / "base_resume.pdf")
-        config.resume.rendercv_path = str(root / "resume_rendercv.yaml")
+        database_dir = ensure_app_dirs()["database"]
+        config.resume.json_path = str(database_dir / "resume.json")
+        config.resume.base_pdf_path = str(database_dir / "base_resume.pdf")
+        config.resume.rendercv_path = str(database_dir / "resume_rendercv.yaml")
         config.resume.rendercv_theme = "classic"
+        runtime_path = Path(config.runtime.sqlite_path)
+        runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_path.touch(exist_ok=True)
         config.preferences.role = "python developer"
         config.preferences.cities = ["Bengaluru"]
         resume_json = Path(config.resume.json_path)
@@ -340,3 +367,24 @@ class ConfigManager:
             output.extend(block)
             counter += 1
         return bytes(a ^ b for a, b in zip(data, output[: len(data)], strict=False))
+
+    def _merge_value(self, current: Any, data: Any) -> Any:
+        if isinstance(current, dict) and isinstance(data, dict):
+            for key, value in data.items():
+                existing = current.get(key)
+                if isinstance(existing, dict) and isinstance(value, dict):
+                    self._merge_value(existing, value)
+                else:
+                    current[key] = value
+            return current
+        if hasattr(current, "__dataclass_fields__") and isinstance(data, dict):
+            for key, value in data.items():
+                existing = getattr(current, key, None)
+                if hasattr(existing, "__dataclass_fields__") and isinstance(value, dict):
+                    self._merge_value(existing, value)
+                elif isinstance(existing, dict) and isinstance(value, dict):
+                    self._merge_value(existing, value)
+                else:
+                    setattr(current, key, value)
+            return current
+        return data

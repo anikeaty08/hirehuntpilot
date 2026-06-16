@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from hirehuntpilot.config import AIConfig
@@ -18,6 +19,94 @@ class AIAdapter:
             f"Role: {job.title}\nCompany: {job.company}\nDescription: {job.description}\n\nResume:\n{resume_text}"
         )
         return self._generate(prompt, fallback=self._fallback_resume(job, resume_text))
+
+    def parse_resume_text(self, resume_text: str) -> dict[str, Any]:
+        fallback = self._fallback_parse_resume_text(resume_text)
+        provider = self.config.provider.casefold()
+        if provider in {"", "none"}:
+            return fallback
+        prompt = (
+            "You are converting a raw pasted resume into structured JSON for a job application CLI.\n"
+            "Return JSON only. Fix spelling conservatively, normalize formatting, and do not invent facts.\n"
+            "Use this shape:\n"
+            '{"name":"","headline":"","summary":"","skills":[],"experience":[],"projects":[],"education":[]}\n\n'
+            f"Resume text:\n{resume_text}"
+        )
+        try:
+            raw = self._generate(prompt, fallback="")
+            parsed = self._parse_json_payload(raw)
+        except Exception:
+            return fallback
+        if not isinstance(parsed, dict):
+            return fallback
+        return self._merge_resume_payload(fallback, parsed)
+
+    def chat_response(self, message: str, *, context: str = "") -> str:
+        provider = self.config.provider.casefold()
+        fallback = (
+            "Available actions: paste resume text with /resume, then use /run, /prepare, /apply dry-run, "
+            "/apply commit, /status, /doctor, or /verify."
+        )
+        if provider in {"", "none"}:
+            return fallback
+        prompt = (
+            "You are the CLI copilot for a job-application agent.\n"
+            "Reply concisely. Focus on what the user can do next in the CLI.\n\n"
+            f"Context:\n{context}\n\n"
+            f"User message:\n{message}"
+        )
+        return self._generate(prompt, fallback=fallback)
+
+    def plan_chat_action(self, message: str, *, context: str = "") -> dict[str, Any]:
+        fallback = self._fallback_chat_action(message)
+        provider = self.config.provider.casefold()
+        if provider in {"", "none"}:
+            return fallback
+        prompt = (
+            "You are converting a CLI chat request into structured automation intent.\n"
+            "Return JSON only with this shape:\n"
+            '{"intent":"chat|search|search_apply|prepare|apply|status|doctor|verify","role":"","city":"","limit":25,"commit":false,"missing":[]}\n'
+            "Only include facts that are explicit or strongly implied. If something essential is missing, list it in missing.\n\n"
+            f"Context:\n{context}\n\n"
+            f"User message:\n{message}"
+        )
+        try:
+            raw = self._generate(prompt, fallback="")
+            parsed = self._parse_json_payload(raw)
+        except Exception:
+            return fallback
+        if not isinstance(parsed, dict):
+            return fallback
+        merged = dict(fallback)
+        merged.update(parsed)
+        missing = merged.get("missing", [])
+        merged["missing"] = missing if isinstance(missing, list) else []
+        merged = self._normalize_action(message, merged)
+        return merged
+
+    def normalize_resume_profile(self, resume_data: dict[str, Any]) -> dict[str, Any]:
+        provider = self.config.provider.casefold()
+        if provider in {"", "none"}:
+            return resume_data
+        prompt = (
+            "You are cleaning a candidate profile for resume generation.\n"
+            "Return JSON only. Fix spelling, normalize formatting, and improve clarity conservatively. "
+            "Do not invent achievements, dates, roles, metrics, or skills.\n\n"
+            "Keep the same top-level structure and preserve factual content.\n\n"
+            f"Profile:\n{json.dumps(resume_data, ensure_ascii=True)}"
+        )
+        try:
+            raw = self._generate(prompt, fallback="")
+            parsed = self._parse_json_payload(raw)
+        except Exception:
+            return resume_data
+        if not isinstance(parsed, dict):
+            return resume_data
+        merged = dict(resume_data)
+        for key, value in parsed.items():
+            if key in merged:
+                merged[key] = value
+        return merged
 
     def tailor_resume_content(self, job: JobRecord, resume_data: dict[str, Any]) -> dict[str, Any]:
         fallback = self._fallback_resume_content(job, resume_data)
@@ -249,6 +338,137 @@ class AIAdapter:
     def _score_text(self, text: str, keywords: set[str]) -> int:
         haystack = text.casefold()
         return sum(1 for token in keywords if token in haystack)
+
+    def _fallback_parse_resume_text(self, resume_text: str) -> dict[str, Any]:
+        lines = [line.strip() for line in resume_text.splitlines() if line.strip()]
+        payload: dict[str, Any] = {
+            "name": lines[0] if lines else "",
+            "headline": "",
+            "summary": "",
+            "skills": [],
+            "experience": [],
+            "projects": [],
+            "education": [],
+        }
+        section_map = {
+            "summary": "summary",
+            "skills": "skills",
+            "experience": "experience",
+            "projects": "projects",
+            "education": "education",
+        }
+        current_section = ""
+        summary_lines: list[str] = []
+        for line in lines[1:]:
+            key = line.casefold().rstrip(":")
+            if key in section_map:
+                current_section = section_map[key]
+                continue
+            if current_section == "summary":
+                summary_lines.append(line.lstrip("- ").strip())
+            elif current_section == "skills":
+                value = line.split(":", 1)[-1] if ":" in line else line
+                parts = [part.strip(" -") for part in value.split(",") if part.strip(" -")]
+                payload["skills"].extend(parts)
+            elif current_section in {"experience", "projects", "education"}:
+                cleaned = line.lstrip("- ").strip()
+                if not cleaned:
+                    continue
+                if current_section == "experience":
+                    payload["experience"].append({"company": cleaned, "position": "", "summary": ""})
+                elif current_section == "projects":
+                    payload["projects"].append({"name": cleaned, "summary": ""})
+                else:
+                    payload["education"].append({"institution": cleaned, "area": "", "degree": "", "summary": ""})
+            elif not payload["headline"]:
+                payload["headline"] = line
+            else:
+                summary_lines.append(line)
+        payload["summary"] = " ".join(summary_lines).strip()
+        return payload
+
+    def _fallback_chat_action(self, message: str) -> dict[str, Any]:
+        lowered = message.casefold().strip()
+        action = {
+            "intent": "chat",
+            "role": "",
+            "city": "",
+            "limit": 25,
+            "commit": False,
+            "missing": [],
+            "sources": [],
+        }
+        count_match = re.search(r"(\d+)\s+jobs?", lowered)
+        if count_match:
+            action["limit"] = int(count_match.group(1))
+        elif "a job" in lowered or "one job" in lowered:
+            action["limit"] = 1
+        if "apply" in lowered and ("search" in lowered or "find" in lowered):
+            action["intent"] = "search_apply"
+            action["commit"] = True
+        elif "apply" in lowered:
+            action["intent"] = "apply"
+            action["commit"] = "commit" in lowered or "real" in lowered or "submit" in lowered
+        elif "prepare" in lowered:
+            action["intent"] = "prepare"
+        elif "status" in lowered:
+            action["intent"] = "status"
+        elif "doctor" in lowered:
+            action["intent"] = "doctor"
+        elif "verify" in lowered or "check" in lowered:
+            action["intent"] = "verify"
+        elif "search" in lowered or "find me" in lowered or "find " in lowered:
+            action["intent"] = "search"
+
+        city_match = re.search(r"\bin\s+([a-zA-Z][a-zA-Z\s]+?)(?:\s+as\s+|$)", lowered)
+        if city_match:
+            action["city"] = city_match.group(1).strip().title()
+
+        role_match = re.search(r"\bas\s+([a-zA-Z0-9\/\-\+\s]+)$", lowered)
+        if role_match:
+            action["role"] = role_match.group(1).strip()
+        elif "backend" in lowered:
+            action["role"] = "backend developer"
+        elif "python developer" in lowered:
+            action["role"] = "python developer"
+
+        source_aliases = {
+            "linkedin": "linkedin",
+            "linkedln": "linkedin",
+            "linkdin": "linkedin",
+            "naukri": "naukri",
+            "internshala": "internshala",
+            "indeed": "indeed",
+            "unstop": "unstop",
+            "shine": "shine",
+        }
+        action["sources"] = [target for alias, target in source_aliases.items() if alias in lowered]
+        action["sources"] = sorted(set(action["sources"]))
+
+        if action["intent"] in {"search", "search_apply"}:
+            if not action["role"]:
+                action["missing"].append("role")
+            if not action["city"]:
+                action["missing"].append("city")
+        return action
+
+    def _normalize_action(self, message: str, action: dict[str, Any]) -> dict[str, Any]:
+        lowered = message.casefold()
+        normalized = dict(action)
+        try:
+            normalized["limit"] = max(1, int(normalized.get("limit", 25) or 25))
+        except Exception:
+            normalized["limit"] = 25
+        if normalized["intent"] in {"search", "search_apply"} and normalized["limit"] <= 0:
+            normalized["limit"] = 25
+        if "a job" in lowered or "one job" in lowered:
+            normalized["limit"] = 1
+        if "apply" in lowered and any(term in lowered for term in ("search", "find", "job", "jobs")):
+            normalized["intent"] = "search_apply"
+            normalized["commit"] = True
+        sources = normalized.get("sources", [])
+        normalized["sources"] = [str(source).casefold() for source in sources if source]
+        return normalized
 
     def _parse_json_payload(self, raw: str) -> Any:
         stripped = raw.strip()

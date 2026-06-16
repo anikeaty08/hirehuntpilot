@@ -8,6 +8,8 @@ from hirehuntpilot.models import JobRecord
 
 class HireHuntClient:
     def search(self, *, query: str, cities: list[str], sources: list[str], limit: int = 25) -> list[JobRecord]:
+        if not sources:
+            return []
         try:
             from hirehunt import scrape_jobs
         except ImportError:
@@ -57,23 +59,14 @@ class HireHuntClient:
             return jobs
         return self._fallback_jobs(query=query, cities=cities, sources=sources, limit=limit)
 
-
-def _stringify(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value)
-
-
-def _optional_string(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    return str(value)
-
     def _fallback_jobs(self, *, query: str, cities: list[str], sources: list[str], limit: int) -> list[JobRecord]:
         city = cities[0] if cities else "Bengaluru"
-        active_sources = sources or ["naukri", "internshala"]
+        active_sources = list(sources)
+        if not active_sources:
+            return []
         jobs: list[JobRecord] = []
-        for index, source in enumerate(active_sources[: max(1, min(limit, len(active_sources) * 3))]):
+        max_jobs = max(1, min(limit, len(active_sources) * 3))
+        for index, source in enumerate(active_sources[:max_jobs]):
             title = query.title()
             company = f"Sample {source.title()} Company {index + 1}"
             url = f"https://example.com/{source}/{index + 1}"
@@ -103,3 +96,15 @@ def _optional_string(value: Any) -> str | None:
             if len(jobs) >= limit:
                 break
         return jobs
+
+
+def _stringify(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _optional_string(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)

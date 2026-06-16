@@ -104,7 +104,7 @@ class RuntimeFlowTests(unittest.TestCase):
             {"query": "python developer", "cities": ["Bengaluru"], "sources": ["naukri"], "limit": 1},
         )
         supervisor.run_until_idle()
-        ledger = app_home() / "applications.csv"
+        ledger = app_home() / "database" / "applications.csv"
         self.assertTrue(ledger.exists())
         with ledger.open("r", encoding="utf-8", newline="") as handle:
             rows = list(csv.DictReader(handle))
@@ -123,6 +123,15 @@ class RuntimeFlowTests(unittest.TestCase):
         ok, detail = manager.refresh_session("naukri", email="demo@example.com", headed=True)
         self.assertTrue(ok)
         self.assertTrue(Path(detail).exists())
+
+    def test_search_with_no_enabled_sources_returns_no_jobs(self) -> None:
+        supervisor = build_supervisor(self._config())
+        supervisor.enqueue(
+            TaskType.SEARCH_SOURCES,
+            {"query": "python developer", "cities": ["Bengaluru"], "sources": [], "limit": 2},
+        )
+        supervisor.run_until_idle()
+        self.assertEqual(supervisor.state.list_applications(), [])
 
 
 if __name__ == "__main__":

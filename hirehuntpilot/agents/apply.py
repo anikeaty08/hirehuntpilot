@@ -2,17 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from hirehuntpilot.config import PersonalConfig
 from hirehuntpilot.config import app_home
-from hirehuntpilot.browser.portals import InternshalaDriver, NaukriDriver
+from hirehuntpilot.browser.portals import build_portal_drivers
 from hirehuntpilot.models import ApplicationStatus, ArtifactRecord, TaskRecord, TaskType
 
 
 class ApplyAgent:
-    def __init__(self) -> None:
-        self.drivers = {
-            "naukri": NaukriDriver(),
-            "internshala": InternshalaDriver(),
-        }
+    def __init__(self, personal: PersonalConfig | None = None) -> None:
+        self.drivers = build_portal_drivers(personal=personal)
 
     def handles(self) -> set[TaskType]:
         return {TaskType.DRY_RUN_APPLICATION, TaskType.SUBMIT_APPLICATION}
@@ -27,6 +25,7 @@ class ApplyAgent:
         if not driver:
             application.status = ApplicationStatus.MANUAL_REQUIRED
             application.notes = f"unsupported portal: {job.source}"
+            application.extra["manual_reason"] = "unsupported_form"
         else:
             artifacts = {item.artifact_type: item.path for item in supervisor.state.list_artifacts(job_id)}
             if task.task_type is TaskType.DRY_RUN_APPLICATION:
@@ -43,6 +42,12 @@ class ApplyAgent:
             application.status = ApplicationStatus(result.status)
             application.notes = result.notes
             application.screenshot_path = result.screenshot_path
+            if result.reason_code:
+                application.extra["manual_reason"] = result.reason_code
+            elif application.status is not ApplicationStatus.MANUAL_REQUIRED:
+                application.extra.pop("manual_reason", None)
+            if result.metadata:
+                application.extra.update(result.metadata)
             if task.task_type is TaskType.DRY_RUN_APPLICATION and application.status is ApplicationStatus.DRY_RUN_ONLY:
                 logs_dir = app_home() / "logs"
                 logs_dir.mkdir(parents=True, exist_ok=True)

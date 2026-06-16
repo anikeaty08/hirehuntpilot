@@ -8,7 +8,7 @@ from hirehuntpilot.agents.scout import ScoutAgent
 from hirehuntpilot.agents.tracker import TrackerAgent
 from hirehuntpilot.ai.adapter import AIAdapter
 from hirehuntpilot.config import AppConfig
-from hirehuntpilot.integrations.sheets import SheetsTracker
+from hirehuntpilot.integrations.tracker import LocalTracker
 from hirehuntpilot.notifiers.service import NotificationService
 from hirehuntpilot.orchestrator.bus import EventBus
 from hirehuntpilot.orchestrator.policies import PolicyEngine
@@ -23,14 +23,14 @@ def build_supervisor(config: AppConfig) -> Supervisor:
         exclude_companies=set(config.preferences.exclude_companies),
         exclude_keywords=set(config.preferences.exclude_keywords),
     )
-    tracker = SheetsTracker(config.sheets.spreadsheet_id, config.sheets.service_account_json_path)
+    tracker = LocalTracker()
     notifications = NotificationService(config)
     context = SupervisorContext(config=config, state=state, bus=bus, policies=policies)
     agents = [
         ScoutAgent(),
         GatekeeperAgent(),
         ResumeAgent(AIAdapter(config.ai)),
-        ApplyAgent(),
+        ApplyAgent(config.personal),
         TrackerAgent(tracker),
         NotificationAgent(notifications),
     ]

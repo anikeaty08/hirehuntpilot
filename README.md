@@ -21,7 +21,13 @@ pip install -e .
 
 ```bash
 hirehuntpilot init
-hirehuntpilot ai-setup
+hirehuntpilot setup
+hirehuntpilot setup-status
+hirehuntpilot setup-profile
+hirehuntpilot setup-resume
+hirehuntpilot setup-ai
+hirehuntpilot setup-notifications
+hirehuntpilot setup-portals
 hirehuntpilot doctor
 hirehuntpilot run
 hirehuntpilot prepare
@@ -29,12 +35,28 @@ hirehuntpilot apply --dry-run
 hirehuntpilot status
 ```
 
+## Onboarding
+
+`hirehuntpilot init` bootstraps the encrypted config, creates the local SQLite runtime workspace, and then launches staged setup. `hirehuntpilot setup` reruns the same onboarding flow later without resetting existing data.
+
+The setup flow is split into phases so users can opt in, skip, or return later:
+
+- profile
+- resume
+- ai
+- notifications
+- portals
+
+The primary runtime state is local SQLite under `.hirehuntpilot/runtime.db`.
+
+`hirehuntpilot setup-status` shows both saved setup states and live readiness checks.
+
 ## AI Setup
 
-`hirehuntpilot init` now keeps existing config when present and guides AI setup with numbered selections instead of raw manual typing. The same guided flow is also available via:
+`hirehuntpilot setup-ai` provides the guided provider/model selection flow directly:
 
 ```bash
-hirehuntpilot ai-setup
+hirehuntpilot setup-ai
 ```
 
 Supported provider paths in the guided setup:
@@ -49,7 +71,7 @@ The setup flow stores the API key in the encrypted config, lets you select from 
 
 ## Resume Pipeline
 
-The resume pipeline is RenderCV-based. `resume.json` is the source profile, the resume agent selects job-relevant content for each application, writes a job-specific RenderCV YAML file, and renders a PDF during `hirehuntpilot prepare`.
+The resume pipeline is RenderCV-based. `resume.json` is the canonical source profile. The staged resume setup collects structured profile data, optionally runs LLM-based normalization for spelling and clarity, stores the cleaned profile as JSON, and then the resume agent selects job-relevant content for each application, writes a job-specific RenderCV YAML file, and renders a PDF during `hirehuntpilot prepare`.
 
 Example config:
 
@@ -62,3 +84,5 @@ resume:
 ```
 
 `hirehuntpilot prepare` now treats the RenderCV render step as required. If the `rendercv` CLI is missing or PDF generation fails, preparation fails instead of silently falling back.
+
+`hirehuntpilot prepare` also requires AI setup to be complete so resume tailoring is model-backed rather than falling back silently.

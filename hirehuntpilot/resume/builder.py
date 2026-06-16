@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
+from urllib.parse import urlparse
 
 from hirehuntpilot.compat import dump_data
 from hirehuntpilot.config import PersonalConfig, ResumeConfig
@@ -48,8 +50,8 @@ def build_rendercv_payload(
             "headline": resume_data.get("headline") or resume_data.get("title") or "",
             "location": resume_data.get("location") or "",
             "email": personal.email or None,
-            "phone": personal.phone or None,
-            "website": personal.portfolio or None,
+            "phone": _normalize_phone(personal.phone),
+            "website": _normalize_url(personal.portfolio),
             "social_networks": _build_social_networks(personal),
             "sections": {},
         },
@@ -118,6 +120,30 @@ def _build_social_networks(personal: PersonalConfig) -> list[dict[str, str]] | N
 def _social_username(value: str) -> str:
     trimmed = value.rstrip("/")
     return trimmed.rsplit("/", 1)[-1] if "/" in trimmed else trimmed
+
+
+def _normalize_phone(value: str) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    digits = re.sub(r"\D+", "", raw)
+    if raw.startswith("+") and 8 <= len(digits) <= 15:
+        return f"+{digits}"
+    return None
+
+
+def _normalize_url(value: str) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme and parsed.netloc:
+        return raw
+    candidate = f"https://{raw}" if "://" not in raw else raw
+    reparsed = urlparse(candidate)
+    if reparsed.scheme in {"http", "https"} and reparsed.netloc:
+        return candidate
+    return None
 
 
 def _normalize_experience_entries(value: Any) -> list[dict[str, Any]]:

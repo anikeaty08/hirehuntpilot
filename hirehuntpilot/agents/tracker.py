@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from hirehuntpilot.integrations.sheets import SheetsTracker
+from hirehuntpilot.integrations.tracker import LocalTracker
 from hirehuntpilot.models import TaskRecord, TaskType
 
 
 class TrackerAgent:
-    def __init__(self, tracker: SheetsTracker) -> None:
+    def __init__(self, tracker: LocalTracker) -> None:
         self.tracker = tracker
 
     def handles(self) -> set[TaskType]:
