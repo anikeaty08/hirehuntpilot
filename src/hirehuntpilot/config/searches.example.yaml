@@ -1,0 +1,28 @@
+# hirehuntpilot search configuration
+# This feeds the hirehunt-based discovery stage.
+
+defaults:
+  hours_old: 72
+  results_per_source: 25
+
+locations:
+  - location: "Bengaluru"
+    remote: false
+  - location: "Remote"
+    remote: true
+
+sources:
+  - linkedin
+  - naukri
+  - indeed
+  - internshala
+  - unstop
+  - shine
+
+queries:
+  - query: "python developer"
+    tier: 1
+  - query: "backend engineer"
+    tier: 1
+  - query: "software engineer"
+    tier: 2

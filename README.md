@@ -1,88 +1,250 @@
 # HireHuntPilot
 
-`HireHuntPilot` is a local multi-agent orchestrator for discovering jobs, qualifying them, preparing application artifacts, and coordinating application workflows.
+HireHuntPilot is a local AI-assisted job application pipeline built around the `hirehunt` discovery framework.
 
-Current implementation focus:
+It is designed to:
+- discover jobs from configured portals
+- enrich job descriptions and application links
+- score jobs against your profile with an LLM
+- tailor resumes and cover letters per job
+- launch browser-driven application flows
 
-- SQLite-backed task queue and event log
-- Supervisor + specialized agents
-- Encrypted local config
-- CLI triggers for run, prepare, apply, doctor, and status
-- Optional Google Sheets sync and notification adapters
+## Current Branding
+
+The active package and CLI names are:
+- `hirehuntpilot`
+- `hirepilot`
+
+The codebase has been renamed around `hirehuntpilot`, and discovery is wired to `hirehunt`.
+
+## How Discovery Works
+
+The active discovery stage uses `hirehunt`, not `jobspy`.
+
+Current discovery path:
+- [src/hirehuntpilot/discovery/hirehunt.py](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/discovery/hirehunt.py)
+- [src/hirehuntpilot/pipeline.py](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/pipeline.py)
+
+Configured sources can include:
+- `linkedin`
+- `naukri`
+- `indeed`
+- `internshala`
+- `unstop`
+- `shine`
+
+If `hirehunt` is not installed or live discovery fails, the current implementation falls back to synthetic sample jobs so the pipeline can still run.
+
+## Project Layout
+
+Main package:
+- [src/hirehuntpilot](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot)
+
+Important modules:
+- [src/hirehuntpilot/cli.py](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/cli.py): CLI entrypoint
+- [src/hirehuntpilot/config.py](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/config.py): app paths and runtime config
+- [src/hirehuntpilot/database.py](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/database.py): SQLite schema and stats
+- [src/hirehuntpilot/pipeline.py](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/pipeline.py): stage orchestration
+- [src/hirehuntpilot/discovery/hirehunt.py](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/discovery/hirehunt.py): `hirehunt` discovery integration
+- [src/hirehuntpilot/enrichment/detail.py](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/enrichment/detail.py): enrichment
+- [src/hirehuntpilot/scoring](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/scoring): scoring, tailoring, cover letter, PDF stages
+- [src/hirehuntpilot/apply](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/apply): browser/application flow
+
+## Requirements
+
+- Python `3.11+`
+- Chrome or Chromium for browser-driven apply flows
+- Node.js / `npx` for Playwright MCP usage in apply flows
+- Claude Code CLI for the autonomous apply stage
+- An LLM provider for scoring/tailoring:
+  - `GEMINI_API_KEY`, or
+  - `OPENAI_API_KEY`, or
+  - `LLM_URL` for a local OpenAI-compatible model
+
+Optional:
+- `hirehunt` Python package for live job discovery
 
 ## Install
+
+Standard install:
 
 ```bash
 pip install -e .
 ```
-`RenderCV` is a required dependency. The project now expects Python 3.12+ and installs `rendercv[full]` as part of the base environment.
 
-## Commands
+This exposes:
+
+```bash
+hirehuntpilot
+hirepilot
+```
+
+If you want a local virtual environment:
+
+```bash
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -e .
+```
+
+## First Run
+
+Initialize the workspace:
 
 ```bash
 hirehuntpilot init
-hirehuntpilot setup
-hirehuntpilot setup-status
-hirehuntpilot setup-profile
-hirehuntpilot setup-resume
-hirehuntpilot setup-ai
-hirehuntpilot setup-notifications
-hirehuntpilot setup-portals
+```
+
+This creates application data under:
+- default: `~/.hirehuntpilot`
+- override with: `HIREHUNTPILOT_DIR`
+
+Example using a repo-local runtime folder:
+
+```powershell
+$env:HIREHUNTPILOT_DIR=(Join-Path (Get-Location) ".runtime")
+hirehuntpilot init
+```
+
+## Commands
+
+### Doctor
+
+Verify environment and setup:
+
+```bash
 hirehuntpilot doctor
+```
+
+### Run
+
+Run the pipeline:
+
+```bash
 hirehuntpilot run
-hirehuntpilot prepare
+```
+
+Run only discovery:
+
+```bash
+hirehuntpilot run discover
+```
+
+Dry-run discovery:
+
+```bash
+hirehuntpilot run --dry-run discover
+```
+
+Run selected stages:
+
+```bash
+hirehuntpilot run discover enrich
+hirehuntpilot run score tailor cover
+```
+
+### Apply
+
+Run browser-driven application flow:
+
+```bash
+hirehuntpilot apply
+```
+
+Dry run:
+
+```bash
 hirehuntpilot apply --dry-run
+```
+
+Apply to a specific URL:
+
+```bash
+hirehuntpilot apply --url "https://example.com/job"
+```
+
+### Status
+
+```bash
 hirehuntpilot status
 ```
 
-## Onboarding
-
-`hirehuntpilot init` bootstraps the encrypted config, creates the local SQLite runtime workspace, and then launches staged setup. `hirehuntpilot setup` reruns the same onboarding flow later without resetting existing data.
-
-The setup flow is split into phases so users can opt in, skip, or return later:
-
-- profile
-- resume
-- ai
-- notifications
-- portals
-
-The primary runtime state is local SQLite under `.hirehuntpilot/runtime.db`.
-
-`hirehuntpilot setup-status` shows both saved setup states and live readiness checks.
-
-## AI Setup
-
-`hirehuntpilot setup-ai` provides the guided provider/model selection flow directly:
+### Dashboard
 
 ```bash
-hirehuntpilot setup-ai
+hirehuntpilot dashboard
 ```
 
-Supported provider paths in the guided setup:
+## Pipeline Stages
 
-- OpenAI API key
-- Google Gemini API key
-- Groq API key
-- Mistral API key
-- Local OpenAI-compatible server such as Ollama or LM Studio
+The current pipeline stages are:
 
-The setup flow stores the API key in the encrypted config, lets you select from curated current model presets, supports custom model IDs, and verifies the provider/model before finishing.
+1. `discover`
+2. `enrich`
+3. `score`
+4. `tailor`
+5. `cover`
+6. `pdf`
 
-## Resume Pipeline
+`discover` is currently routed through the `hirehunt` integration.
 
-The resume pipeline is RenderCV-based. `resume.json` is the canonical source profile. The staged resume setup collects structured profile data, optionally runs LLM-based normalization for spelling and clarity, stores the cleaned profile as JSON, and then the resume agent selects job-relevant content for each application, writes a job-specific RenderCV YAML file, and renders a PDF during `hirehuntpilot prepare`.
+## Search Configuration
 
-Example config:
+Example search config lives at:
+- [src/hirehuntpilot/config/searches.example.yaml](/abs/path/C:/Users/anike/Desktop/hirehunterpilot/src/hirehuntpilot/config/searches.example.yaml)
+
+It supports:
+- `queries`
+- `locations`
+- `sources`
+- `defaults.results_per_source`
+- `defaults.hours_old`
+
+Example source list:
 
 ```yaml
-resume:
-  mode: rendercv
-  json_path: /path/to/resume.json
-  rendercv_path: /path/to/resume_rendercv.yaml
-  rendercv_theme: classic
+sources:
+  - linkedin
+  - naukri
+  - indeed
+  - internshala
+  - unstop
+  - shine
 ```
 
-`hirehuntpilot prepare` now treats the RenderCV render step as required. If the `rendercv` CLI is missing or PDF generation fails, preparation fails instead of silently falling back.
+## Runtime Data
 
-`hirehuntpilot prepare` also requires AI setup to be complete so resume tailoring is model-backed rather than falling back silently.
+By default the app stores runtime data under `~/.hirehuntpilot`.
+
+Important files:
+- `runtime.db`: SQLite database
+- `profile.json`: profile data
+- `resume.txt`: base resume text
+- `.env`: API keys and LLM config
+- `searches.yaml`: search config
+- `tailored_resumes/`: generated tailored resumes
+- `cover_letters/`: generated cover letters
+- `logs/`: pipeline/apply logs
+
+## Notes
+
+- Discovery is actively wired to `hirehunt`.
+- Legacy imported discovery modules have been removed. The active discovery path is `hirehunt` only.
+- The current app is runnable as `hirehuntpilot`, but parts of the broader architecture still reflect the imported upstream codebase and may need further integration work.
+
+## Verified Commands
+
+The following were smoke-tested successfully in a clean local venv during integration:
+
+```powershell
+.\.venvtest\Scripts\python.exe -m hirehuntpilot --help
+.\.venvtest\Scripts\python.exe -m hirehuntpilot doctor
+$env:HIREHUNTPILOT_DIR=(Join-Path (Get-Location) ".runtime")
+.\.venvtest\Scripts\python.exe -m hirehuntpilot run --dry-run discover
+.\.venvtest\Scripts\python.exe -m hirehuntpilot run discover
+```
+
+## Next Recommended Work
+
+- remove or refactor remaining unused legacy discovery modules
+- align the apply layer with your preferred multi-agent orchestration model
+- restore or rebuild richer chat/agent behavior if you want the older interactive flow back on top of this base
