@@ -45,14 +45,17 @@ Repository = "https://github.com/anikeaty08/hirehuntpilot"
 Issues = "https://github.com/anikeaty08/hirehuntpilot/issues"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/hirehuntpilot"]
+[tool.setuptools]
+package-dir = {"" = "src"}
 
-[tool.hatch.build]
-artifacts = ["src/hirehuntpilot/config/*.yaml", "src/hirehuntpilot/config/*.json"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hirehuntpilot = ["config/*.yaml", "config/*.json"]
 
 [tool.ruff]
 target-version = "py311"
