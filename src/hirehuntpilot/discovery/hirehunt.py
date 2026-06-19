@@ -27,6 +27,10 @@ def run_discovery(cfg: dict | None = None) -> dict[str, Any]:
     sources = cfg.get("sources") or cfg.get("boards") or ["linkedin", "naukri", "indeed"]
     limit_per_query = int(cfg.get("defaults", {}).get("results_per_source", cfg.get("defaults", {}).get("results_per_site", 25)))
 
+    log.info("Active discovery queries: %s", ", ".join(queries))
+    log.info("Active discovery locations: %s", ", ".join(cities))
+    log.info("Active discovery sources: %s", ", ".join(sources))
+
     init_db()
     conn = get_connection()
 
@@ -38,6 +42,7 @@ def run_discovery(cfg: dict | None = None) -> dict[str, Any]:
     used_fallback = False
     any_live_success = False
     selected_sources: list[str] = []
+    preview_jobs: list[dict[str, Any]] = []
 
     for query in queries:
         total_queries += 1
@@ -54,6 +59,8 @@ def run_discovery(cfg: dict | None = None) -> dict[str, Any]:
         used_fallback = used_fallback or bool(result_info.get("fallback_used"))
         any_live_success = any_live_success or bool(result_info.get("live_success"))
         selected_sources = result_info.get("selected_sources") or selected_sources
+        if len(preview_jobs) < 8:
+            preview_jobs.extend(jobs[: max(0, 8 - len(preview_jobs))])
 
         log.info(
             "hirehunt query '%s' returned %d jobs (%d new, %d existing)%s",
@@ -82,6 +89,7 @@ def run_discovery(cfg: dict | None = None) -> dict[str, Any]:
         "live_success": any_live_success,
         "live_access_blocked": blocked,
         "selected_sources": selected_sources or list(sources),
+        "preview_jobs": preview_jobs[:8],
     }
 
 
@@ -218,6 +226,10 @@ def _store_jobs(conn, jobs: list[dict[str, Any]]) -> tuple[int, int]:
 
     for job in jobs:
         try:
+            existed_before = conn.execute(
+                "SELECT 1 FROM jobs WHERE url = ?",
+                (job["url"],),
+            ).fetchone() is not None
             conn.execute(
                 """
                 INSERT INTO jobs (
@@ -225,6 +237,27 @@ def _store_jobs(conn, jobs: list[dict[str, Any]]) -> tuple[int, int]:
                     full_description, application_url, detail_scraped_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(url) DO UPDATE SET
+                    title = COALESCE(excluded.title, jobs.title),
+                    salary = COALESCE(excluded.salary, jobs.salary),
+                    description = COALESCE(excluded.description, jobs.description),
+                    location = COALESCE(excluded.location, jobs.location),
+                    site = CASE
+                        WHEN jobs.site IS NULL OR jobs.site = '' OR lower(jobs.site) = 'unknown'
+                        THEN excluded.site
+                        ELSE jobs.site
+                    END,
+                    strategy = CASE
+                        WHEN jobs.strategy IS NULL OR jobs.strategy = '' OR jobs.strategy = 'unknown'
+                        THEN excluded.strategy
+                        ELSE jobs.strategy
+                    END,
+                    full_description = COALESCE(excluded.full_description, jobs.full_description),
+                    application_url = COALESCE(excluded.application_url, jobs.application_url),
+                    detail_scraped_at = CASE
+                        WHEN excluded.full_description IS NOT NULL THEN excluded.detail_scraped_at
+                        ELSE jobs.detail_scraped_at
+                    END
                 """,
                 (
                     job["url"],
@@ -240,7 +273,10 @@ def _store_jobs(conn, jobs: list[dict[str, Any]]) -> tuple[int, int]:
                     now if job.get("full_description") else None,
                 ),
             )
-            new += 1
+            if existed_before:
+                existing += 1
+            else:
+                new += 1
         except Exception:
             existing += 1
 

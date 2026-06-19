@@ -1,5 +1,5 @@
-﻿"""Enable `python -m hirehuntpilot`."""
+"""Enable `python -m hirehuntpilot`."""
 
-from hirehuntpilot.cli import app
+from hirehuntpilot.cli import entrypoint
 
-app()
+entrypoint()

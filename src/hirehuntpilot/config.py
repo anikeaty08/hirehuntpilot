@@ -1,4 +1,4 @@
-﻿"""hirehuntpilot configuration: paths, platform detection, user data."""
+"""hirehuntpilot configuration: paths, platform detection, user data."""
 
 import os
 import platform
@@ -28,6 +28,11 @@ APPLY_WORKER_DIR = APP_DIR / "apply-workers"
 # Package-shipped config (YAML registries)
 PACKAGE_DIR = Path(__file__).parent
 CONFIG_DIR = PACKAGE_DIR / "config"
+
+# AgentScope multi-LLM model config path.
+# The wizard writes the user's config here; falls back to the package template.
+MODEL_CONFIG_PATH = APP_DIR / "model_config.json"
+_PACKAGE_MODEL_CONFIG = CONFIG_DIR / "model_config.json"
 
 
 def get_chrome_path() -> str:
@@ -178,6 +183,11 @@ def load_env():
         load_dotenv(ENV_PATH)
     # Also try CWD .env as fallback
     load_dotenv()
+    try:
+        from hirehuntpilot.secrets import export_secrets_to_env
+        export_secrets_to_env()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -202,22 +212,21 @@ def get_tier() -> int:
 
     Tier 1 (Discovery):            Python + pip
     Tier 2 (AI Scoring & Tailoring): + LLM API key
-    Tier 3 (Full Auto-Apply):       + Claude Code CLI + Chrome
+    Tier 3 (Full Auto-Apply):       + Chrome/Chromium
     """
     load_env()
 
-    has_llm = any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL"))
+    has_llm = any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL", "ANTHROPIC_API_KEY", "GROQ_API_KEY"))
     if not has_llm:
         return 1
 
-    has_claude = shutil.which("claude") is not None
     try:
         get_chrome_path()
         has_chrome = True
     except FileNotFoundError:
         has_chrome = False
 
-    if has_claude and has_chrome:
+    if has_chrome:
         return 3
 
     return 2
@@ -238,15 +247,13 @@ def check_tier(required: int, feature: str) -> None:
     _console = Console(stderr=True)
 
     missing: list[str] = []
-    if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
-        missing.append("LLM API key â€” run [bold]hirehuntpilot init[/bold] or set GEMINI_API_KEY")
+    if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL", "ANTHROPIC_API_KEY", "GROQ_API_KEY")):
+        missing.append("LLM API key — run [bold]hirehuntpilot init[/bold]")
     if required >= 3:
-        if not shutil.which("claude"):
-            missing.append("Claude Code CLI â€” install from [bold]https://claude.ai/code[/bold]")
         try:
             get_chrome_path()
         except FileNotFoundError:
-            missing.append("Chrome/Chromium â€” install or set CHROME_PATH")
+            missing.append("Chrome/Chromium — install or set CHROME_PATH")
 
     _console.print(
         f"\n[red]'{feature}' requires {TIER_LABELS.get(required, f'Tier {required}')} (Tier {required}).[/red]\n"
@@ -258,3 +265,128 @@ def check_tier(required: int, feature: str) -> None:
             _console.print(f"  - {m}")
     _console.print()
     raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# AgentScope helpers – dynamic model config loading
+# ---------------------------------------------------------------------------
+
+def load_model_config() -> dict:
+    """Load the AgentScope model_config.json, resolving env-variable placeholders.
+
+    Resolution order:
+      1. ~/.hirehuntpilot/model_config.json  (written by wizard)
+      2. Package-shipped template at src/hirehuntpilot/config/model_config.json
+
+    Returns:
+        Parsed dict with env-vars substituted in string values.
+    """
+    import json
+    import re
+
+    config_path = MODEL_CONFIG_PATH if MODEL_CONFIG_PATH.exists() else _PACKAGE_MODEL_CONFIG
+    raw = config_path.read_text(encoding="utf-8")
+
+    # Substitute ${VAR:-default} and ${VAR} patterns with env values
+    def _sub(match: re.Match) -> str:
+        var, _, default = match.group(1).partition(":-")
+        return os.environ.get(var, default)
+
+    raw = re.sub(r"\$\{([^}]+)\}", _sub, raw)
+    return json.loads(raw)
+
+
+def get_agent_model(role: str) -> str:
+    """Return the AgentScope config_name for a given agent role.
+
+    Reads the 'agent_roles' mapping from model_config.json.  If the role is
+    not present, falls back to 'default'.
+
+    Args:
+        role: One of 'scoring', 'tailoring', 'cover_letter', 'apply_agent',
+              'telegram_router', etc.
+
+    Returns:
+        The config_name string that maps to a model_configs entry.
+    """
+    cfg = load_model_config()
+    roles: dict = cfg.get("agent_roles", {})
+    return roles.get(role, roles.get("default", "default"))
+
+
+def load_agentscope_model(config_name: str):
+    """Load and instantiate an AgentScope model wrapper by its config_name.
+
+    Args:
+        config_name: Name of the config in model_config.json (e.g. 'groq', 'gemini').
+
+    Returns:
+        An instantiated ChatModelBase subclass (e.g. OpenAIChatModel).
+    """
+    cfg = load_model_config()
+    model_configs = cfg.get("model_configs", [])
+
+    match = None
+    for item in model_configs:
+        if item.get("config_name") == config_name:
+            match = item
+            break
+
+    if not match:
+        raise ValueError(f"Model config name '{config_name}' not found in model_config.json")
+
+    model_type = match.get("model_type", "openai_chat")
+    model_name = match.get("model_name", "")
+    api_key = match.get("api_key", "")
+    client_args = match.get("client_args", {}) or {}
+
+    from agentscope.credential._factory import CredentialFactory
+
+    cred_type_map = {
+        "openai_chat": "openai_credential",
+        "anthropic_chat": "anthropic_credential",
+        "gemini_chat": "gemini_credential",
+        "ollama_chat": "ollama_credential",
+        "openai": "openai_credential",
+        "anthropic": "anthropic_credential",
+        "gemini": "gemini_credential",
+        "ollama": "ollama_credential",
+    }
+
+    model_class_map = {
+        "openai_chat": "OpenAIChatModel",
+        "anthropic_chat": "AnthropicChatModel",
+        "gemini_chat": "GeminiChatModel",
+        "ollama_chat": "OllamaChatModel",
+        "openai": "OpenAIChatModel",
+        "anthropic": "AnthropicChatModel",
+        "gemini": "GeminiChatModel",
+        "ollama": "OllamaChatModel",
+    }
+
+    cred_type = cred_type_map.get(model_type, "openai_credential")
+    class_name = model_class_map.get(model_type, "OpenAIChatModel")
+
+    cred_data = {
+        "type": cred_type,
+        "api_key": api_key,
+    }
+    if "base_url" in client_args:
+        cred_data["base_url"] = client_args["base_url"]
+    if "organization" in client_args:
+        cred_data["organization"] = client_args["organization"]
+
+    credential = CredentialFactory.from_dict(cred_data)
+
+    import agentscope.model as asm
+    model_class = getattr(asm, class_name)
+
+    kwargs = {}
+    if client_args:
+        clean_kwargs = {k: v for k, v in client_args.items() if k not in ("base_url", "organization")}
+        if clean_kwargs:
+            kwargs["client_kwargs"] = clean_kwargs
+
+    return model_class(credential=credential, model=model_name, **kwargs)
+
+

@@ -1,4 +1,4 @@
-﻿"""Resume tailoring: LLM-powered ATS-optimized resume generation per job.
+"""Resume tailoring: LLM-powered ATS-optimized resume generation per job.
 
 THIS IS THE HEAVIEST REFACTOR. Every piece of personal data -- name, email, phone,
 skills, companies, projects, school -- is loaded at runtime from the user's profile.
@@ -418,18 +418,20 @@ def tailor_resume(
             avoid_notes.extend(validation["errors"])
             if attempt < max_retries:
                 continue
-            # Last attempt â€” assemble whatever we got
+            # Last attempt — assemble whatever we got
             tailored = assemble_resume_text(data, profile)
             report["status"] = "failed_validation"
+            report["data"] = data
             return tailored, report
 
         # Assemble text (header injected by code, em dashes auto-fixed)
         tailored = assemble_resume_text(data, profile)
 
-        # Layer 2: LLM judge (catches subtle fabrication) â€” skipped in lenient mode
+        # Layer 2: LLM judge (catches subtle fabrication) — skipped in lenient mode
         if validation_mode == "lenient":
             report["judge"] = {"verdict": "SKIPPED", "passed": True, "issues": "none"}
             report["status"] = "approved"
+            report["data"] = data
             return tailored, report
 
         judge = judge_tailored_resume(resume_text, tailored, job.get("title", ""), profile)
@@ -443,17 +445,149 @@ def tailor_resume(
                     continue
             # Accept best attempt on last retry (all modes) or if lenient
             report["status"] = "approved_with_judge_warning"
+            report["data"] = data
             return tailored, report
 
         # Both passed
         report["status"] = "approved"
+        report["data"] = data
         return tailored, report
 
     report["status"] = "exhausted_retries"
     return tailored, report
 
 
-# â”€â”€ Batch Entry Point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── RenderCV Helper ──────────────────────────────────────────────────────────
+
+def save_rendercv_yaml(data: dict, profile: dict, output_path: Path) -> None:
+    """Generate and write a RenderCV-compatible YAML file from tailored resume data."""
+    import yaml
+    
+    personal = profile.get("personal", {})
+    
+    # Map social networks
+    socials = []
+    if personal.get("linkedin_url"):
+        username = personal["linkedin_url"].split("linkedin.com/in/")[-1].strip("/")
+        socials.append({"network": "LinkedIn", "username": username})
+    if personal.get("github_url"):
+        username = personal["github_url"].split("github.com/")[-1].strip("/")
+        socials.append({"network": "GitHub", "username": username})
+
+    cv = {
+        "name": personal.get("full_name", ""),
+        "headline": data.get("title", "Software Engineer"),
+        "email": personal.get("email", ""),
+        "phone": personal.get("phone", ""),
+        "location": personal.get("city", ""),
+    }
+    if socials:
+        cv["social_networks"] = socials
+        
+    sections = {}
+    
+    # Summary
+    if data.get("summary"):
+        sections["summary"] = [data["summary"]]
+        
+    # Experience
+    if data.get("experience"):
+        exp_list = []
+        for exp in data["experience"]:
+            header = exp.get("header", "")
+            subtitle = exp.get("subtitle", "")
+            
+            company = "Company"
+            position = header
+            if " at " in header:
+                position, company = header.split(" at ", 1)
+            elif " @ " in header:
+                position, company = header.split(" @ ", 1)
+                
+            date = "Date"
+            location = ""
+            if "|" in subtitle:
+                parts = subtitle.split("|")
+                date = parts[-1].strip()
+            else:
+                date = subtitle.strip() or "Present"
+                
+            exp_list.append({
+                "company": company.strip(),
+                "position": position.strip(),
+                "date": date,
+                "location": location,
+                "highlights": exp.get("bullets", [])
+            })
+        sections["experience"] = exp_list
+        
+    # Projects
+    if data.get("projects"):
+        proj_list = []
+        for proj in data["projects"]:
+            header = proj.get("header", "")
+            subtitle = proj.get("subtitle", "")
+            
+            name = header
+            if " - " in header:
+                name, _ = header.split(" - ", 1)
+                
+            date = subtitle.strip() or "Present"
+            
+            proj_list.append({
+                "name": name.strip(),
+                "date": date,
+                "highlights": proj.get("bullets", [])
+            })
+        sections["projects"] = proj_list
+        
+    # Skills
+    if data.get("skills"):
+        skills_list = []
+        if isinstance(data["skills"], dict):
+            for cat, val in data["skills"].items():
+                skills_list.append({
+                    "label": cat,
+                    "details": str(val)
+                })
+        sections["skills"] = skills_list
+        
+    # Education
+    if data.get("education"):
+        edu_str = str(data["education"])
+        inst = edu_str
+        degree = ""
+        if "|" in edu_str:
+            inst, degree = edu_str.split("|", 1)
+        sections["education"] = [{
+            "institution": inst.strip(),
+            "degree": degree.strip(),
+        }]
+        
+    cv["sections"] = sections
+    
+    payload = {
+        "cv": cv,
+        "design": {
+            "theme": "engineeringresumes",
+            "page": {
+                "size": "us-letter",
+                "margins": {
+                    "top": "1.5 cm",
+                    "bottom": "1.5 cm",
+                    "left": "1.5 cm",
+                    "right": "1.5 cm",
+                }
+            }
+        }
+    }
+    
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("# yaml-language-server: $schema=https://raw.githubusercontent.com/rendercv/rendercv/refs/tags/v2.8/schema.json\n")
+        yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
+
+
+# â”€â”€ Batch Entry Point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_tailoring(min_score: int = 7, limit: int = 20,
                   validation_mode: str = "normal") -> dict:
@@ -498,6 +632,14 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             # Save tailored resume text
             txt_path = TAILORED_DIR / f"{prefix}.txt"
             txt_path.write_text(tailored, encoding="utf-8")
+
+            # Save RenderCV YAML file
+            if report.get("data"):
+                try:
+                    yaml_path = TAILORED_DIR / f"{prefix}.yaml"
+                    save_rendercv_yaml(report["data"], profile, yaml_path)
+                except Exception as exc:
+                    log.warning("Could not generate RenderCV YAML file: %s", exc)
 
             # Save job description for traceability
             job_path = TAILORED_DIR / f"{prefix}_JOB.txt"

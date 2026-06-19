@@ -1,4 +1,4 @@
-﻿"""Chrome lifecycle management for apply workers.
+"""Chrome lifecycle management for apply workers.
 
 Handles launching an isolated Chrome instance with remote debugging,
 worker profile setup/cloning, and cross-platform process cleanup.
@@ -319,3 +319,60 @@ def cleanup_on_exit() -> None:
 
     # Sweep base port for any orphan
     _kill_on_port(BASE_CDP_PORT)
+
+
+# ---------------------------------------------------------------------------
+# Playwright stealth helper
+# ---------------------------------------------------------------------------
+
+def create_stealth_page(playwright_context):
+    """Create a new Playwright page with stealth evasion applied.
+
+    Applies playwright-stealth to mask common bot-detection signals:
+      - navigator.webdriver = false
+      - navigator.plugins mimics real browser
+      - Chrome runtime object present
+      - Language/timezone fingerprint randomised
+
+    Args:
+        playwright_context: A Playwright BrowserContext object.
+
+    Returns:
+        A Playwright Page with stealth applied.
+    """
+    page = playwright_context.new_page()
+    try:
+        from playwright_stealth import stealth_sync  # type: ignore
+        stealth_sync(page)
+        logger.debug("playwright-stealth applied to new page")
+    except ImportError:
+        logger.debug(
+            "playwright-stealth not installed – skipping stealth mode. "
+            "Install with: pip install playwright-stealth"
+        )
+    except Exception as exc:
+        logger.warning("playwright-stealth apply failed: %s", exc)
+    return page
+
+
+def connect_playwright_to_worker(worker_id: int, playwright):
+    """Connect a Playwright instance to an already-running Chrome worker.
+
+    Args:
+        worker_id: Numeric worker identifier (must match a running launch_chrome).
+        playwright: A Playwright object from playwright.sync_api.sync_playwright().
+
+    Returns:
+        Tuple of (browser, context, page) with stealth applied to the page.
+    """
+    port = BASE_CDP_PORT + worker_id
+    endpoint = f"http://localhost:{port}"
+    browser = playwright.chromium.connect_over_cdp(endpoint)
+    # Use first existing context or create a new one
+    if browser.contexts:
+        context = browser.contexts[0]
+    else:
+        context = browser.new_context()
+    page = create_stealth_page(context)
+    return browser, context, page
+

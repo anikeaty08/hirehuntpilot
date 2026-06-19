@@ -1,4 +1,4 @@
-﻿"""Text-to-PDF conversion for tailored resumes and cover letters.
+"""Text-to-PDF conversion for tailored resumes and cover letters.
 
 Parses the structured text resume format, renders via an HTML/CSS template,
 and exports to PDF using headless Chromium via Playwright.
@@ -372,6 +372,42 @@ def convert_to_pdf(
         Path to the generated PDF (or HTML) file.
     """
     text_path = Path(text_path)
+    
+    # Try RenderCV first if a corresponding YAML exists and html_only is False
+    yaml_path = text_path.with_suffix(".yaml")
+    if yaml_path.exists() and not html_only:
+        import shutil
+        import subprocess
+        
+        rendercv_bin = shutil.which("rendercv")
+        if rendercv_bin:
+            out = output_path or text_path.with_suffix(".pdf")
+            out = Path(out)
+            log.info("RenderCV detected. Compiling PDF using RenderCV template...")
+            
+            try:
+                output_dir = out.parent
+                # RenderCV requires the YAML path
+                subprocess.run(
+                    [rendercv_bin, "render", str(yaml_path), "--output-directory", str(output_dir)],
+                    check=True,
+                    capture_output=True,
+                )
+                
+                # RenderCV outputs to: <output_dir>/rendercv_output/
+                rendercv_out_dir = output_dir / "rendercv_output"
+                if rendercv_out_dir.exists():
+                    pdfs = list(rendercv_out_dir.glob("*.pdf"))
+                    if pdfs:
+                        # Move the generated PDF to target path
+                        shutil.move(str(pdfs[0]), str(out))
+                        # Clean up the output folder
+                        shutil.rmtree(str(rendercv_out_dir))
+                        log.info("RenderCV PDF generated successfully: %s", out)
+                        return out
+            except Exception as exc:
+                log.warning("RenderCV compilation failed, falling back to Playwright HTML-to-PDF: %s", exc)
+
     text = text_path.read_text(encoding="utf-8")
     resume = parse_resume(text)
     html = build_html(resume)

@@ -1,4 +1,4 @@
-﻿"""hirehuntpilot Pipeline Orchestrator.
+"""hirehuntpilot Pipeline Orchestrator.
 
 Runs pipeline stages in sequence or concurrently (streaming mode).
 
@@ -20,6 +20,7 @@ from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from hirehuntpilot.config import load_env, ensure_dirs
 from hirehuntpilot.database import init_db, get_connection, get_stats
@@ -73,8 +74,67 @@ def _run_discover(workers: int = 1) -> dict:
         return {"status": f"error: {e}"}
 
 
+def _trim_url(url: str) -> str:
+    if not url:
+        return ""
+    if not url.startswith("http"):
+        return url
+    from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+    try:
+        parsed = urlparse(url)
+        # Drop tracking and non-essential parameters
+        if "linkedin.com" in parsed.netloc:
+            # Keep path, drop query
+            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+        
+        q_params = parse_qsl(parsed.query)
+        clean_params = []
+        for k, v in q_params:
+            if k.lower() in ("refid", "trackingid", "position", "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "spm"):
+                continue
+            clean_params.append((k, v))
+        
+        query_str = urlencode(clean_params)
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, query_str, parsed.fragment))
+    except Exception:
+        return url
+
+
+def _render_job_preview(stage_name: str, jobs: list[dict]) -> None:
+    if not jobs:
+        return
+
+    title = "Fresh jobs" if stage_name == "discover" else "Sample jobs"
+    table = Table(
+        title=title,
+        show_header=True,
+        header_style="bold cyan",
+        border_style="bright_blue",
+        pad_edge=False,
+    )
+    table.add_column("Role", style="bold white", overflow="fold")
+    table.add_column("Source", style="magenta")
+    table.add_column("Location", style="green")
+    table.add_column("URL", style="bright_blue", overflow="fold")
+
+    for job in jobs[:8]:
+        url = job.get("url") or ""
+        display_url = _trim_url(url)
+        url_cell = f"[link={url}]{display_url}[/link]" if url.startswith("http") else display_url
+        table.add_row(
+            job.get("title") or "Untitled job",
+            job.get("site") or "unknown",
+            job.get("location") or "Unknown",
+            url_cell,
+        )
+
+    console.print()
+    console.print(table)
+    console.print(Text("Tip: open the URL above to inspect the live posting before enrichment/apply.", style="dim"))
+
+
 def _run_enrich(workers: int = 1) -> dict:
-    """Stage: Detail enrichment â€” scrape full descriptions and apply URLs."""
+    """Stage: Detail enrichment - scrape full descriptions and apply URLs."""
     try:
         from hirehuntpilot.enrichment.detail import run_enrichment
         run_enrichment(workers=workers)
@@ -85,7 +145,7 @@ def _run_enrich(workers: int = 1) -> dict:
 
 
 def _run_score() -> dict:
-    """Stage: LLM scoring â€” assign fit scores 1-10."""
+    """Stage: LLM scoring - assign fit scores 1-10."""
     try:
         from hirehuntpilot.scoring.scorer import run_scoring
         run_scoring()
@@ -96,7 +156,7 @@ def _run_score() -> dict:
 
 
 def _run_tailor(min_score: int = 7, validation_mode: str = "normal") -> dict:
-    """Stage: Resume tailoring â€” generate tailored resumes for high-fit jobs."""
+    """Stage: Resume tailoring - generate tailored resumes for high-fit jobs."""
     try:
         from hirehuntpilot.scoring.tailor import run_tailoring
         run_tailoring(min_score=min_score, validation_mode=validation_mode)
@@ -118,7 +178,7 @@ def _run_cover(min_score: int = 7, validation_mode: str = "normal") -> dict:
 
 
 def _run_pdf() -> dict:
-    """Stage: PDF conversion â€” convert tailored resumes and cover letters to PDF."""
+    """Stage: PDF conversion - convert tailored resumes and cover letters to PDF."""
     try:
         from hirehuntpilot.scoring.pdf import batch_convert
         batch_convert()
@@ -284,7 +344,7 @@ def _run_stage_streaming(
             # No work right now
             upstream_done = upstream is None or tracker.is_done(upstream)
             if upstream_done:
-                # No work and upstream is done â€” this stage is finished
+                # No work and upstream is done - this stage is finished
                 break
             # Upstream still running, wait and retry
             if stop_event.wait(timeout=_STREAM_POLL_INTERVAL):
@@ -307,7 +367,7 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
     for name in ordered:
         meta = STAGE_META[name]
         console.print(f"\n{'=' * 70}")
-        console.print(f"  [bold]STAGE: {name}[/bold] â€” {meta['desc']}")
+        console.print(f"  [bold cyan]STAGE:[/bold cyan] [bold]{name}[/bold] - {meta['desc']}")
         console.print(f"  Started: {datetime.now().strftime('%H:%M:%S')}")
         console.print(f"{'=' * 70}")
 
@@ -334,6 +394,7 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
                     ]
                     if sub_errors:
                         status = "partial"
+                    _render_job_preview(name, result.get("preview_jobs", []))
 
         except Exception as e:
             elapsed = time.time() - t0
@@ -345,7 +406,8 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
         if status not in ("ok", "partial"):
             errors[name] = status
 
-        console.print(f"\n  Stage '{name}' completed in {elapsed:.1f}s â€” {status}")
+        status_style = "green" if status == "ok" else "yellow" if status == "partial" else "red"
+        console.print(f"\n  [bold]{name}[/bold] finished in {elapsed:.1f}s - [{status_style}]{status}[/{status_style}]")
 
     total_elapsed = time.time() - pipeline_start
     return {"stages": results, "errors": errors, "elapsed": total_elapsed}
@@ -358,7 +420,7 @@ def _run_streaming(ordered: list[str], min_score: int, workers: int = 1,
     stop_event = threading.Event()
     pipeline_start = time.time()
 
-    console.print(f"\n  [bold cyan]STREAMING MODE[/bold cyan] â€” stages run concurrently")
+    console.print(f"\n  [bold cyan]STREAMING MODE[/bold cyan] - stages run concurrently")
     console.print(f"  Poll interval: {_STREAM_POLL_INTERVAL}s\n")
 
     # Mark stages NOT in `ordered` as done so downstream doesn't wait for them
@@ -391,7 +453,7 @@ def _run_streaming(ordered: list[str], min_score: int, workers: int = 1,
                 f"  [green]Completed:[/green] {name} ({elapsed:.1f}s)"
             )
     except KeyboardInterrupt:
-        console.print("\n[yellow]Interrupted â€” stopping stages...[/yellow]")
+        console.print("\n[yellow]Interrupted - stopping stages...[/yellow]")
         stop_event.set()
         for t in threads.values():
             t.join(timeout=10)
@@ -462,7 +524,7 @@ def run_pipeline(
     console.print(f"  DB:        {pre_stats['total']} jobs, {pre_stats['pending_detail']} pending enrichment")
 
     if dry_run:
-        console.print(f"\n  [yellow]DRY RUN[/yellow] â€” would execute ({mode}):")
+        console.print(f"\n  [yellow]DRY RUN[/yellow] - would execute ({mode}):")
         for name in ordered:
             meta = STAGE_META[name]
             console.print(f"    {name:<12s}  {meta['desc']}")

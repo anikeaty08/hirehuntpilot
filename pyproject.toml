@@ -1,6 +1,6 @@
 [project]
 name = "hirehuntpilot"
-version = "0.3.0"
+version = "0.4.0"
 description = "AI-powered end-to-end job application pipeline built around hirehunt discovery"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -26,15 +26,18 @@ dependencies = [
     "playwright>=1.40",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
-    "pandas>=2.0",
+    "agentscope>=0.1.0",
+    "playwright-stealth>=1.0.6",
+    "ddddocr>=1.4.0",
+    "python-telegram-bot>=21.0",
     ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.1"]
 
 [project.scripts]
-hirehuntpilot = "hirehuntpilot.cli:app"
-hirepilot = "hirehuntpilot.cli:app"
+hirehuntpilot = "hirehuntpilot.cli:entrypoint"
+hirepilot = "hirehuntpilot.cli:entrypoint"
 
 [project.urls]
 Homepage = "https://github.com/anikeaty08/hirehuntpilot"
@@ -49,7 +52,7 @@ build-backend = "hatchling.build"
 packages = ["src/hirehuntpilot"]
 
 [tool.hatch.build]
-artifacts = ["src/hirehuntpilot/config/*.yaml"]
+artifacts = ["src/hirehuntpilot/config/*.yaml", "src/hirehuntpilot/config/*.json"]
 
 [tool.ruff]
 target-version = "py311"

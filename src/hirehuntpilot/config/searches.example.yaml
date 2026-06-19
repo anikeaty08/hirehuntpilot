@@ -20,9 +20,9 @@ sources:
   - shine
 
 queries:
-  - query: "python developer"
+  - query: "software engineer"
     tier: 1
   - query: "backend engineer"
     tier: 1
-  - query: "software engineer"
+  - query: "full stack engineer"
     tier: 2

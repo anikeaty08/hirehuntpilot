@@ -1,0 +1,52 @@
+{
+  "model_configs": [
+    {
+      "config_name": "default",
+      "model_type": "openai_chat",
+      "model_name": "gpt-4o-mini",
+      "api_key": "${OPENAI_API_KEY}",
+      "client_args": {}
+    },
+    {
+      "config_name": "gemini",
+      "model_type": "openai_chat",
+      "model_name": "gemini-2.0-flash",
+      "api_key": "${GEMINI_API_KEY}",
+      "client_args": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"
+      }
+    },
+    {
+      "config_name": "groq",
+      "model_type": "openai_chat",
+      "model_name": "llama-3.3-70b-versatile",
+      "api_key": "${GROQ_API_KEY}",
+      "client_args": {
+        "base_url": "https://api.groq.com/openai/v1"
+      }
+    },
+    {
+      "config_name": "ollama",
+      "model_type": "openai_chat",
+      "model_name": "llama3.1:8b",
+      "api_key": "ollama",
+      "client_args": {
+        "base_url": "${LLM_URL:-http://localhost:11434/v1}"
+      }
+    },
+    {
+      "config_name": "anthropic",
+      "model_type": "anthropic_chat",
+      "model_name": "claude-3-5-haiku-latest",
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "client_args": {}
+    }
+  ],
+  "agent_roles": {
+    "scoring": "default",
+    "tailoring": "default",
+    "cover_letter": "default",
+    "apply_agent": "default",
+    "telegram_router": "default"
+  }
+}

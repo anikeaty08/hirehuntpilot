@@ -1,46 +1,24 @@
-﻿"""hirehuntpilot CLI â€” the main entry point."""
+"""hirehuntpilot CLI package entrypoint."""
 
 from __future__ import annotations
 
-import logging
 from typing import Optional
 
 import typer
-from rich.console import Console
+from rich.prompt import Prompt
 from rich.table import Table
 
 from hirehuntpilot import __version__
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%H:%M:%S",
-)
+from hirehuntpilot.cli.setup import init_app, search_app
+from hirehuntpilot.cli.shared import bootstrap, console
 
 app = typer.Typer(
     name="hirehuntpilot",
     help="AI-powered end-to-end job application pipeline.",
-    no_args_is_help=True,
+    no_args_is_help=False,
 )
-console = Console()
-log = logging.getLogger(__name__)
 
-# Valid pipeline stages (in execution order)
 VALID_STAGES = ("discover", "enrich", "score", "tailor", "cover", "pdf")
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _bootstrap() -> None:
-    """Common setup: load env, create dirs, init DB."""
-    from hirehuntpilot.config import load_env, ensure_dirs
-    from hirehuntpilot.database import init_db
-
-    load_env()
-    ensure_dirs()
-    init_db()
 
 
 def _version_callback(value: bool) -> None:
@@ -49,28 +27,32 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
+app.add_typer(init_app, name="init")
+app.add_typer(search_app, name="search")
 
-@app.callback()
+
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
-        False, "--version", "-V",
+        False,
+        "--version",
+        "-V",
         help="Show version and exit.",
         callback=_version_callback,
         is_eager=True,
     ),
 ) -> None:
-    """hirehuntpilot â€” AI-powered end-to-end job application pipeline."""
+    """hirehuntpilot - AI-powered end-to-end job application pipeline."""
+    if ctx.invoked_subcommand is None:
+        import sys
 
+        if sys.stdin.isatty():
+            from hirehuntpilot.wizard.init import smart_launch
 
-@app.command()
-def init() -> None:
-    """Run the first-time setup wizard (profile, resume, search config)."""
-    from hirehuntpilot.wizard.init import run_wizard
-
-    run_wizard()
+            smart_launch()
+        else:
+            console.print(ctx.get_help())
 
 
 @app.command()
@@ -85,11 +67,13 @@ def run(
     ),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for tailor/cover stages."),
     workers: int = typer.Option(1, "--workers", "-w", help="Parallel threads for discovery/enrichment stages."),
-    stream: bool = typer.Option(False, "--stream", help="Run stages concurrently (streaming mode)."),
+    stream: bool = typer.Option(
+        False, "--stream", help="Run stages concurrently with the database as a conveyor belt."
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview stages without executing."),
-    validation: str = typer.Option(
+    advanced_validation: str = typer.Option(
         "normal",
-        "--validation",
+        "--advanced-validation",
         help=(
             "Validation strictness for tailor/cover stages. "
             "strict: banned words = errors, judge must pass. "
@@ -99,32 +83,29 @@ def run(
     ),
 ) -> None:
     """Run pipeline stages: discover, enrich, score, tailor, cover, pdf."""
-    _bootstrap()
+    bootstrap()
 
     from hirehuntpilot.pipeline import run_pipeline
 
     stage_list = stages if stages else ["all"]
-
-    # Validate stage names
-    for s in stage_list:
-        if s != "all" and s not in VALID_STAGES:
+    for stage in stage_list:
+        if stage != "all" and stage not in VALID_STAGES:
             console.print(
-                f"[red]Unknown stage:[/red] '{s}'. "
+                f"[red]Unknown stage:[/red] '{stage}'. "
                 f"Valid stages: {', '.join(VALID_STAGES)}, all"
             )
             raise typer.Exit(code=1)
 
-    # Gate AI stages behind Tier 2
     llm_stages = {"score", "tailor", "cover"}
-    if any(s in stage_list for s in llm_stages) or "all" in stage_list:
+    if any(stage in stage_list for stage in llm_stages) or "all" in stage_list:
         from hirehuntpilot.config import check_tier
+
         check_tier(2, "AI scoring/tailoring")
 
-    # Validate the --validation flag value
     valid_modes = ("strict", "normal", "lenient")
-    if validation not in valid_modes:
+    if advanced_validation not in valid_modes:
         console.print(
-            f"[red]Invalid --validation value:[/red] '{validation}'. "
+            f"[red]Invalid --advanced-validation value:[/red] '{advanced_validation}'. "
             f"Choose from: {', '.join(valid_modes)}"
         )
         raise typer.Exit(code=1)
@@ -135,9 +116,8 @@ def run(
         dry_run=dry_run,
         stream=stream,
         workers=workers,
-        validation_mode=validation,
+        validation_mode=advanced_validation,
     )
-
     if result.get("errors"):
         raise typer.Exit(code=1)
 
@@ -147,58 +127,84 @@ def apply(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of parallel browser workers."),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for job selection."),
-    model: str = typer.Option("haiku", "--model", "-m", help="Claude model name."),
     continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
     url: Optional[str] = typer.Option(None, "--url", help="Apply to a specific job URL."),
-    gen: bool = typer.Option(False, "--gen", help="Generate prompt file for manual debugging instead of running."),
     mark_applied: Optional[str] = typer.Option(None, "--mark-applied", help="Manually mark a job URL as applied."),
-    mark_failed: Optional[str] = typer.Option(None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."),
+    mark_failed: Optional[str] = typer.Option(
+        None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."
+    ),
     fail_reason: Optional[str] = typer.Option(None, "--fail-reason", help="Reason for --mark-failed."),
     reset_failed: bool = typer.Option(False, "--reset-failed", help="Reset all failed jobs for retry."),
 ) -> None:
     """Launch auto-apply to submit job applications."""
-    _bootstrap()
+    bootstrap()
 
-    from hirehuntpilot.config import check_tier, PROFILE_PATH as _profile_path
+    from hirehuntpilot.config import PROFILE_PATH as profile_path
+    from hirehuntpilot.config import check_tier
     from hirehuntpilot.database import get_connection
-
-    # --- Utility modes (no Chrome/Claude needed) ---
 
     if mark_applied:
         from hirehuntpilot.apply.launcher import mark_job
+
         mark_job(mark_applied, "applied")
         console.print(f"[green]Marked as applied:[/green] {mark_applied}")
         return
 
     if mark_failed:
         from hirehuntpilot.apply.launcher import mark_job
+
         mark_job(mark_failed, "failed", reason=fail_reason)
         console.print(f"[yellow]Marked as failed:[/yellow] {mark_failed} ({fail_reason or 'manual'})")
         return
 
     if reset_failed:
         from hirehuntpilot.apply.launcher import reset_failed as do_reset
+
         count = do_reset()
         console.print(f"[green]Reset {count} failed job(s) for retry.[/green]")
         return
 
-    # --- Full apply mode ---
-
-    # Check 1: Tier 3 required (Claude Code CLI + Chrome)
     check_tier(3, "auto-apply")
 
-    # Check 2: Profile exists
-    if not _profile_path.exists():
+    if not profile_path.exists():
         console.print(
             "[red]Profile not found.[/red]\n"
             "Run [bold]hirehuntpilot init[/bold] to create your profile first."
         )
         raise typer.Exit(code=1)
 
-    # Check 3: Tailored resumes exist (skip for --gen with --url)
-    if not (gen and url):
+    if limit is None and not continuous and not url:
+        import sys
+
+        if sys.stdin.isatty():
+            conn = get_connection()
+            ready = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL AND applied_at IS NULL"
+            ).fetchone()[0]
+            if ready == 0:
+                console.print("[yellow]No tailored resumes ready to apply. Run pipeline first.[/yellow]")
+                return
+            answer = Prompt.ask(
+                f"Found {ready} tailored jobs ready to apply. Apply to how many? (Enter for all, 'q' to quit)",
+                default="all",
+            )
+            if answer.lower() == "q":
+                return
+            if answer == "all":
+                limit = ready
+            else:
+                try:
+                    limit = int(answer)
+                except ValueError:
+                    limit = 1
+        else:
+            limit = 1
+    elif limit is None:
+        limit = 1
+
+    if not url:
         conn = get_connection()
         ready = conn.execute(
             "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL AND applied_at IS NULL"
@@ -210,26 +216,6 @@ def apply(
             )
             raise typer.Exit(code=1)
 
-    if gen:
-        from hirehuntpilot.apply.launcher import gen_prompt, BASE_CDP_PORT
-        target = url or ""
-        if not target:
-            console.print("[red]--gen requires --url to specify which job.[/red]")
-            raise typer.Exit(code=1)
-        prompt_file = gen_prompt(target, min_score=min_score, model=model)
-        if not prompt_file:
-            console.print("[red]No matching job found for that URL.[/red]")
-            raise typer.Exit(code=1)
-        mcp_path = _profile_path.parent / ".mcp-apply-0.json"
-        console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
-        console.print(f"\n[bold]Run manually:[/bold]")
-        console.print(
-            f"  claude --model {model} -p "
-            f"--mcp-config {mcp_path} "
-            f"--permission-mode bypassPermissions < {prompt_file}"
-        )
-        return
-
     from hirehuntpilot.apply.launcher import main as apply_main
 
     effective_limit = limit if limit is not None else (0 if continuous else 1)
@@ -237,7 +223,6 @@ def apply(
     console.print("\n[bold blue]Launching Auto-Apply[/bold blue]")
     console.print(f"  Limit:    {'unlimited' if continuous else effective_limit}")
     console.print(f"  Workers:  {workers}")
-    console.print(f"  Model:    {model}")
     console.print(f"  Headless: {headless}")
     console.print(f"  Dry run:  {dry_run}")
     if url:
@@ -249,7 +234,7 @@ def apply(
         target_url=url,
         min_score=min_score,
         headless=headless,
-        model=model,
+        model="sonnet",
         dry_run=dry_run,
         continuous=continuous,
         workers=workers,
@@ -259,16 +244,19 @@ def apply(
 @app.command()
 def status() -> None:
     """Show pipeline statistics from the database."""
-    _bootstrap()
+    bootstrap()
 
+    from hirehuntpilot.config import load_search_config
     from hirehuntpilot.database import get_stats
+    from hirehuntpilot.wizard.init import _summarize_queries, _summarize_sources
 
     stats = get_stats()
+    search_cfg = load_search_config()
 
-    console.print("\n[bold]hirehuntpilot Pipeline Status[/bold]\n")
+    console.print()
+    console.print("[bold bright_cyan]HireHuntPilot Status[/bold bright_cyan]\n")
 
-    # Summary table
-    summary = Table(title="Pipeline Overview", show_header=True, header_style="bold cyan")
+    summary = Table(title="Pipeline Overview", show_header=True, header_style="bold cyan", border_style="bright_blue")
     summary.add_column("Metric", style="bold")
     summary.add_column("Count", justify="right")
 
@@ -287,9 +275,13 @@ def status() -> None:
 
     console.print(summary)
 
-    # Score distribution
     if stats["score_distribution"]:
-        dist_table = Table(title="\nScore Distribution", show_header=True, header_style="bold yellow")
+        dist_table = Table(
+            title="\nScore Distribution",
+            show_header=True,
+            header_style="bold yellow",
+            border_style="yellow",
+        )
         dist_table.add_column("Score", justify="center")
         dist_table.add_column("Count", justify="right")
         dist_table.add_column("Bar")
@@ -297,20 +289,13 @@ def status() -> None:
         max_count = max(count for _, count in stats["score_distribution"]) or 1
         for score, count in stats["score_distribution"]:
             bar_len = int(count / max_count * 30)
-            if score >= 7:
-                color = "green"
-            elif score >= 5:
-                color = "yellow"
-            else:
-                color = "red"
-            bar = f"[{color}]{'=' * bar_len}[/{color}]"
-            dist_table.add_row(str(score), str(count), bar)
+            color = "green" if score >= 7 else "yellow" if score >= 5 else "red"
+            dist_table.add_row(str(score), str(count), f"[{color}]{'=' * bar_len}[/{color}]")
 
         console.print(dist_table)
 
-    # By site
     if stats["by_site"]:
-        site_table = Table(title="\nJobs by Source", show_header=True, header_style="bold magenta")
+        site_table = Table(title="\nJobs by Source", show_header=True, header_style="bold magenta", border_style="magenta")
         site_table.add_column("Site")
         site_table.add_column("Count", justify="right")
 
@@ -319,13 +304,15 @@ def status() -> None:
 
         console.print(site_table)
 
+    console.print("[bold]Active search queries:[/bold]", _summarize_queries(search_cfg))
+    console.print("[bold]Active sources:[/bold]", _summarize_sources(search_cfg))
     console.print()
 
 
 @app.command()
 def dashboard() -> None:
     """Generate and open the HTML dashboard in your browser."""
-    _bootstrap()
+    bootstrap()
 
     from hirehuntpilot.view import open_dashboard
 
@@ -335,139 +322,158 @@ def dashboard() -> None:
 @app.command()
 def doctor() -> None:
     """Check your setup and diagnose missing requirements."""
-    import shutil
+    import os
+
     from hirehuntpilot.config import (
-        load_env, PROFILE_PATH, RESUME_PATH, RESUME_PDF_PATH,
-        SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path,
+        PROFILE_PATH,
+        RESUME_PATH,
+        RESUME_PDF_PATH,
+        SEARCH_CONFIG_PATH,
+        get_chrome_path,
+        load_env,
+        load_search_config,
     )
+    from hirehuntpilot.secrets import load_secret_store
+    from hirehuntpilot.wizard.init import _summarize_queries, _summarize_sources
 
     load_env()
+    search_cfg = load_search_config()
 
     ok_mark = "[green]OK[/green]"
     fail_mark = "[red]MISSING[/red]"
     warn_mark = "[yellow]WARN[/yellow]"
+    results: list[tuple[str, str, str]] = []
 
-    results: list[tuple[str, str, str]] = []  # (check, status, note)
-
-    # --- Tier 1 checks ---
-    # Profile
     if PROFILE_PATH.exists():
         results.append(("profile.json", ok_mark, str(PROFILE_PATH)))
     else:
         results.append(("profile.json", fail_mark, "Run 'hirehuntpilot init' to create"))
 
-    # Resume
     if RESUME_PATH.exists():
         results.append(("resume.txt", ok_mark, str(RESUME_PATH)))
     elif RESUME_PDF_PATH.exists():
-        results.append(("resume.txt", warn_mark, "Only PDF found â€” plain-text needed for AI stages"))
+        results.append(("resume.txt", warn_mark, "Only PDF found - plain-text needed for AI stages"))
     else:
         results.append(("resume.txt", fail_mark, "Run 'hirehuntpilot init' to add your resume"))
 
-    # Search config
     if SEARCH_CONFIG_PATH.exists():
         results.append(("searches.yaml", ok_mark, str(SEARCH_CONFIG_PATH)))
+        results.append(("search queries", ok_mark, _summarize_queries(search_cfg)))
+        results.append(("search sources", ok_mark, _summarize_sources(search_cfg)))
     else:
-        results.append(("searches.yaml", warn_mark, "Will use example config â€” run 'hirehuntpilot init'"))
+        results.append(("searches.yaml", warn_mark, "Will use example config - run 'hirehuntpilot init'"))
 
-    # hirehunt discovery backend
     try:
         import hirehunt  # noqa: F401
+
         results.append(("hirehunt", ok_mark, "hirehunt discovery package installed"))
     except ImportError:
         results.append(("hirehunt", warn_mark, "Install the hirehunt package to enable live portal discovery"))
 
-    try:
-        from hirehuntpilot.discovery.hirehunt import diagnose_hirehunt
-
-        diagnosis = diagnose_hirehunt()
-        if diagnosis["live_success"] and not diagnosis["fallback_used"]:
-            note = f"{diagnosis['job_count']} live result(s) from {', '.join(diagnosis['selected_sources'])}"
-            results.append(("hirehunt live access", ok_mark, note))
-        elif diagnosis["live_access_blocked"]:
-            err = diagnosis["errors"][0] if diagnosis["errors"] else "socket access blocked"
-            results.append(("hirehunt live access", fail_mark, f"blocked: {err[:140]}"))
-        elif diagnosis["fallback_used"]:
-            err = diagnosis["errors"][0] if diagnosis["errors"] else "live discovery returned no jobs"
-            results.append(("hirehunt live access", warn_mark, f"fallback mode: {err[:140]}"))
-        else:
-            results.append(("hirehunt live access", warn_mark, "no live jobs returned"))
-    except Exception as exc:
-        results.append(("hirehunt live access", warn_mark, f"diagnostic failed: {str(exc)[:140]}"))
-
-    # --- Tier 2 checks ---
-    import os
-    has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
-    has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-    has_local = bool(os.environ.get("LLM_URL"))
-    if has_gemini:
-        model = os.environ.get("LLM_MODEL", "gemini-2.0-flash")
-        results.append(("LLM API key", ok_mark, f"Gemini ({model})"))
-    elif has_openai:
-        model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-        results.append(("LLM API key", ok_mark, f"OpenAI ({model})"))
-    elif has_local:
-        results.append(("LLM API key", ok_mark, f"Local: {os.environ.get('LLM_URL')}"))
+    provider = (os.environ.get("LLM_PROVIDER") or "").strip().lower()
+    model = os.environ.get("LLM_MODEL", "").strip()
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        results.append(("AI provider", ok_mark, f"Anthropic ({model or 'claude-3-5-haiku-latest'})"))
+    elif os.environ.get("GROQ_API_KEY"):
+        results.append(("AI provider", ok_mark, f"Groq ({model or 'llama-3.3-70b-versatile'})"))
+    elif os.environ.get("OPENAI_API_KEY"):
+        results.append(("AI provider", ok_mark, f"OpenAI ({model or 'gpt-4.1-mini'})"))
+    elif os.environ.get("GEMINI_API_KEY"):
+        results.append(("AI provider", ok_mark, f"Gemini ({model or 'gemini-2.0-flash'})"))
+    elif os.environ.get("LLM_URL"):
+        local_note = model or provider or os.environ.get("LLM_URL")
+        results.append(("AI provider", ok_mark, f"Local ({local_note})"))
     else:
-        results.append(("LLM API key", fail_mark,
-                        "Set GEMINI_API_KEY in ~/.hirehuntpilot/.env (run 'hirehuntpilot init')"))
+        results.append(
+            (
+                "AI provider",
+                fail_mark,
+                "Not connected yet - run 'hirehuntpilot init' and choose Anthropic, Groq, OpenAI, Gemini, or Local",
+            )
+        )
 
-    # --- Tier 3 checks ---
-    # Claude Code CLI
-    claude_bin = shutil.which("claude")
-    if claude_bin:
-        results.append(("Claude Code CLI", ok_mark, claude_bin))
-    else:
-        results.append(("Claude Code CLI", fail_mark,
-                        "Install from https://claude.ai/code (needed for auto-apply)"))
-
-    # Chrome
     try:
         chrome_path = get_chrome_path()
         results.append(("Chrome/Chromium", ok_mark, chrome_path))
     except FileNotFoundError:
-        results.append(("Chrome/Chromium", fail_mark,
-                        "Install Chrome or set CHROME_PATH env var (needed for auto-apply)"))
+        results.append(("Chrome/Chromium", fail_mark, "Install Chrome or set CHROME_PATH env var (needed for auto-apply)"))
 
-    # Node.js / npx (for Playwright MCP)
-    npx_bin = shutil.which("npx")
-    if npx_bin:
-        results.append(("Node.js (npx)", ok_mark, npx_bin))
+    try:
+        import agentscope
+
+        results.append(("AgentScope", ok_mark, f"Installed ({agentscope.__version__})"))
+    except ImportError:
+        results.append(("AgentScope", fail_mark, "Install agentscope package"))
+
+    try:
+        import ddddocr  # noqa: F401
+
+        results.append(("ddddocr (local CAPTCHA)", ok_mark, "ddddocr package installed"))
+    except ImportError:
+        results.append(("ddddocr (local CAPTCHA)", warn_mark, "Install ddddocr package for local CAPTCHA solving"))
+
+    secrets = load_secret_store()
+    if secrets.get("TELEGRAM_BOT_TOKEN"):
+        results.append(("Telegram bot control", ok_mark, "Bot token configured"))
     else:
-        results.append(("Node.js (npx)", fail_mark,
-                        "Install Node.js 18+ from nodejs.org (needed for auto-apply)"))
+        results.append(("Telegram bot control", "[dim]optional[/dim]", "Configure bot token in 'hirehuntpilot init' for remote control"))
 
-    # CapSolver (optional)
-    capsolver = os.environ.get("CAPSOLVER_API_KEY")
-    if capsolver:
+    if os.environ.get("CAPSOLVER_API_KEY"):
         results.append(("CapSolver API key", ok_mark, "CAPTCHA solving enabled"))
     else:
-        results.append(("CapSolver API key", "[dim]optional[/dim]",
-                        "Set CAPSOLVER_API_KEY in .env for CAPTCHA solving"))
+        results.append(("CapSolver API key", "[dim]optional[/dim]", "Configure it in 'hirehuntpilot init' if you want paid CAPTCHA fallback"))
 
-    # --- Render results ---
     console.print()
-    console.print("[bold]hirehuntpilot Doctor[/bold]\n")
+    console.print("[bold bright_cyan]HireHuntPilot Doctor[/bold bright_cyan]\n")
 
-    col_w = max(len(r[0]) for r in results) + 2
-    for check, status, note in results:
+    col_w = max(len(row[0]) for row in results) + 2
+    for check, status_mark, note in results:
         pad = " " * (col_w - len(check))
-        console.print(f"  {check}{pad}{status}  [dim]{note}[/dim]")
+        console.print(f"  {check}{pad}{status_mark}  [dim]{note}[/dim]")
 
     console.print()
 
-    # Tier summary
-    from hirehuntpilot.config import get_tier, TIER_LABELS
+    from hirehuntpilot.config import TIER_LABELS, get_tier
+
     tier = get_tier()
-    console.print(f"[bold]Current tier: Tier {tier} â€” {TIER_LABELS[tier]}[/bold]")
-
+    console.print(f"[bold]Current tier: Tier {tier} - {TIER_LABELS[tier]}[/bold]")
     if tier == 1:
-        console.print("[dim]  â†’ Tier 2 unlocks: scoring, tailoring, cover letters (needs LLM API key)[/dim]")
-        console.print("[dim]  â†’ Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
+        console.print("[dim]  -> Tier 2 unlocks: scoring, tailoring, cover letters (needs an AI provider)[/dim]")
+        console.print("[dim]  -> Tier 3 unlocks: auto-apply (needs Chrome/Chromium)[/dim]")
     elif tier == 2:
-        console.print("[dim]  â†’ Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
-
+        console.print("[dim]  -> Tier 3 unlocks: auto-apply (needs Chrome/Chromium)[/dim]")
     console.print()
+
+
+@app.command("telegram")
+def telegram_bot() -> None:
+    """Start the Telegram bot for remote pipeline control."""
+    bootstrap()
+    from hirehuntpilot.telegram_bot import main as telegram_main
+
+    telegram_main()
+
+
+@app.command("start")
+def start_background_daemon() -> None:
+    """Start the background daemon process."""
+    bootstrap()
+    from hirehuntpilot.daemon import start_daemon
+
+    start_daemon()
+
+
+@app.command("stop")
+def stop_background_daemon() -> None:
+    """Stop the background daemon process."""
+    bootstrap()
+    from hirehuntpilot.daemon import stop_daemon
+
+    stop_daemon()
+
+
+def entrypoint() -> None:
+    app()
 
 
 if __name__ == "__main__":
