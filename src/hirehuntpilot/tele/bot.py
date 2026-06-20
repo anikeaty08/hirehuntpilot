@@ -7,6 +7,8 @@ import logging
 import os
 from typing import Callable
 
+import httpx
+
 from hirehuntpilot.tele.agent import TelegramControlAgent
 
 logger = logging.getLogger(__name__)
@@ -96,14 +98,76 @@ class HireHuntTelegramBot:
             text = command_text
         await self._process_text(update, text)
 
+    def _verify_token_connectivity(self) -> None:
+        try:
+            resp = httpx.get(
+                f"https://api.telegram.org/bot{self.token}/getMe",
+                timeout=10,
+            )
+        except httpx.TimeoutException:
+            print(
+                "ERROR: Telegram startup timed out while contacting api.telegram.org. "
+                "Check your internet, VPN/proxy/firewall, then retry."
+            )
+            raise SystemExit(1)
+        except httpx.HTTPError as exc:
+            print(
+                "ERROR: Telegram network startup failed. "
+                f"Check internet/VPN/proxy/firewall and retry. Details: {exc}"
+            )
+            raise SystemExit(1)
+
+        if resp.status_code == 401:
+            print(
+                "ERROR: Telegram rejected the bot token. "
+                "Run 'hirehuntpilot init telegram --force' and enter a valid BotFather token."
+            )
+            raise SystemExit(1)
+
+        if resp.status_code >= 400:
+            print(
+                "ERROR: Telegram API preflight failed. "
+                f"HTTP {resp.status_code}: {resp.text[:200]}"
+            )
+            raise SystemExit(1)
+
     def run(self):
+        from telegram.error import InvalidToken, NetworkError, TimedOut
         from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-        app = Application.builder().token(self.token).build()
+        self._verify_token_connectivity()
+        app = (
+            Application.builder()
+            .token(self.token)
+            .connect_timeout(10)
+            .read_timeout(20)
+            .write_timeout(20)
+            .pool_timeout(20)
+            .build()
+        )
         app.add_handler(CommandHandler(["start", "help", "status"], self._handle_command))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
         logger.info("[telegram-bot] HireHuntPilot bot starting...")
-        app.run_polling(allowed_updates=["message"])
+        try:
+            app.run_polling(allowed_updates=["message"])
+        except InvalidToken:
+            print(
+                "ERROR: Telegram rejected the bot token. "
+                "Run 'hirehuntpilot init telegram --force' and enter a valid BotFather token."
+            )
+            raise SystemExit(1)
+        except TimedOut:
+            print(
+                "ERROR: Telegram startup timed out while contacting api.telegram.org. "
+                "Check your internet, VPN/proxy/firewall, then retry."
+            )
+            raise SystemExit(1)
+        except NetworkError as exc:
+            print(
+                "ERROR: Telegram network startup failed. "
+                f"Check internet/VPN/proxy/firewall and retry. Details: {exc}"
+            )
+            raise SystemExit(1)
 
 
 def main(*, should_load_env: bool = True):
