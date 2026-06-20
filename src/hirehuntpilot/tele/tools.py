@@ -10,6 +10,7 @@ from typing import Callable
 
 from hirehuntpilot import config
 from hirehuntpilot.database import get_connection, get_jobs_by_stage, get_stats, init_db
+from hirehuntpilot.opportunities import classify_opportunity, get_source_profile, list_source_profiles
 
 
 @dataclass(frozen=True)
@@ -80,9 +81,10 @@ def query_jobs(
         score = row.get("fit_score")
         score_text = str(score) if score is not None else "?"
         status_text = row.get("apply_status") or "discovered"
+        opportunity_type = row.get("opportunity_type") or classify_opportunity(row)["opportunity_type"]
         lines.append(
             f"{index}. {row.get('title') or 'Untitled job'} @ {row.get('site') or 'Unknown'} "
-            f"- score {score_text} [{status_text}]"
+            f"- {opportunity_type} - score {score_text} [{status_text}]"
         )
         if include_urls and row.get("url"):
             lines.append(f"URL: {row['url']}")
@@ -145,6 +147,65 @@ def get_search_config() -> str:
             f"Locations: {', '.join(locations) if locations else 'none'}",
         ]
     )
+
+
+def get_source_profiles(source: str | None = None) -> str:
+    if source:
+        profile = get_source_profile(source).to_dict()
+        return "\n".join(
+            [
+                f"Source: {profile['source']}",
+                f"Dominant types: {', '.join(profile['dominant_types'])}",
+                f"Automation suitability: {profile['automation_suitability']}",
+                f"Search strength: {profile['search_strength']}",
+                f"Notes: {profile['notes']}",
+            ]
+        )
+
+    lines = ["Known source profiles"]
+    for profile in list_source_profiles():
+        lines.append(
+            f"- {profile['source']}: {', '.join(profile['dominant_types'])} | "
+            f"{profile['automation_suitability']} automation | {profile['search_strength']}"
+        )
+    return "\n".join(lines)
+
+
+def inspect_sources(
+    query: str | None = None,
+    city: str | None = None,
+    sources: list[str] | None = None,
+    benchmark: bool = False,
+) -> str:
+    from hirehunt import JobQuery
+    from hirehunt.validation import benchmark_sources, validate_sources
+
+    query_text = (query or "python developer").strip()
+    city_text = (city or "Bengaluru").strip()
+    source_list = [item.strip() for item in (sources or []) if item and item.strip()]
+    job_query = JobQuery(search_term=query_text, city=city_text, sources=source_list or "auto", results_wanted=10)
+
+    results = benchmark_sources(job_query, source_list or None) if benchmark else validate_sources(job_query, source_list or None)
+    if not results:
+        return "No source diagnostics returned."
+
+    lines = [f"HireHunt {'benchmark' if benchmark else 'validation'} for '{query_text}' in {city_text}"]
+    for result in results:
+        source_name = str(getattr(result, "source", getattr(result, "source_name", "unknown")))
+        status = str(getattr(result, "status", "unknown"))
+        summary_bits = [f"- {source_name}: {status}"]
+        for field_name in ("job_count", "jobs_found", "kept", "parsed", "requests"):
+            value = getattr(result, field_name, None)
+            if value not in (None, "", 0):
+                summary_bits.append(f"{field_name}={value}")
+        error = getattr(result, "error", None)
+        warning = getattr(result, "warning", None)
+        lines.append(" | ".join(summary_bits))
+        if error:
+            lines.append(f"  error: {error}")
+        elif warning:
+            lines.append(f"  warning: {warning}")
+    return "\n".join(lines)
 
 
 def get_ai_config() -> str:
@@ -284,6 +345,7 @@ def help_overview() -> str:
             "Supported requests:",
             "- greetings like hey/hello",
             "- status questions",
+            "- source questions and HireHunt source diagnostics",
             "- top jobs / stage-based job lists / failed jobs / recent applies",
             "- active queries, sources, runtime paths, AI config",
             "- actions like discover, enrich, score, tailor, cover, pdf, apply",
@@ -304,6 +366,13 @@ TOOL_REGISTRY = [
     ToolSpec("get_failed_jobs", "Show recent failed application reasons from the database.", {"limit": "int optional"}, get_failed_jobs),
     ToolSpec("get_recent_applied", "Show recently applied jobs from the database.", {"limit": "int optional"}, get_recent_applied),
     ToolSpec("get_search_config", "Show active queries, sources, and locations.", {}, get_search_config),
+    ToolSpec("get_source_profiles", "Explain what each source is best for: jobs, internships, or hackathons/challenges.", {"source": "str optional"}, get_source_profiles),
+    ToolSpec(
+        "inspect_sources",
+        "Run HireHunt validation or benchmarking for specific sources and a query.",
+        {"query": "str optional", "city": "str optional", "sources": "list[str] optional", "benchmark": "bool optional"},
+        inspect_sources,
+    ),
     ToolSpec("get_ai_config", "Show the configured AI provider and model.", {}, get_ai_config),
     ToolSpec("get_runtime_info", "Show runtime file paths including DB and profile.", {}, get_runtime_info),
     ToolSpec("get_telegram_config", "Show whether Telegram is configured.", {}, get_telegram_config),
