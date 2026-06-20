@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import os
 from dataclasses import dataclass
@@ -236,6 +238,8 @@ Output ONLY valid JSON, no markdown fences, no explanation.
 """
         model = load_agentscope_model(model_config_name or _router_model_name())
         response = model([{"role": "user", "content": prompt}])
+        if inspect.isawaitable(response):
+            response = asyncio.run(response)
         text = (response.text or "").strip().strip("`").strip()
         if text.startswith("json"):
             text = text[4:].strip()
@@ -265,6 +269,8 @@ Output ONLY the new resume text, no explanation.
 """
         model = load_agentscope_model(model_config_name or _router_model_name())
         response = model([{"role": "user", "content": prompt}])
+        if inspect.isawaitable(response):
+            response = asyncio.run(response)
         text = (response.text or "").strip()
         RESUME_PATH.write_text(text, encoding="utf-8")
         return "Resume updated successfully."

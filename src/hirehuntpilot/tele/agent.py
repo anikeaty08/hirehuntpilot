@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import json
 
@@ -45,6 +47,8 @@ class TelegramControlAgent:
 
         model = load_agentscope_model(self.model_config_name)
         response = model(messages)
+        if inspect.isawaitable(response):
+            response = asyncio.run(response)
         return (response.text or "").strip()
 
     def _decide(self, chat_id: int, user_message: str) -> dict:

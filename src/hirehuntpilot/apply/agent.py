@@ -285,6 +285,8 @@ Rules:
             from hirehuntpilot.config import load_agentscope_model
             model = load_agentscope_model(self.model_config_name)
             response = model(messages)
+            if inspect.isawaitable(response):
+                response = asyncio.run(response)
             return response.text or ""
         except Exception as exc:
             logger.error("LLM call failed: %s", exc)
