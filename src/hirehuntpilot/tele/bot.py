@@ -106,13 +106,17 @@ class HireHuntTelegramBot:
         app.run_polling(allowed_updates=["message"])
 
 
-def main():
+def main(*, should_load_env: bool = True):
     from hirehuntpilot import config
 
-    config.load_env()
+    if should_load_env:
+        config.load_env()
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     if not token:
-        print("ERROR: TELEGRAM_BOT_TOKEN not set. Run 'hirehuntpilot init telegram' to configure.")
+        print(
+            "ERROR: TELEGRAM_BOT_TOKEN not available. "
+            "Run 'hirehuntpilot init telegram --force' on this machine to configure or refresh it."
+        )
         raise SystemExit(1)
 
     allowed_chat_id = _parse_allowed_chat_id(os.environ.get("TELEGRAM_CHAT_ID", ""))

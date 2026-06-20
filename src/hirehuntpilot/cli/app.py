@@ -10,7 +10,7 @@ from rich.table import Table
 
 from hirehuntpilot import __version__
 from hirehuntpilot.cli.setup import init_app, search_app
-from hirehuntpilot.cli.shared import bootstrap, console
+from hirehuntpilot.cli.shared import bootstrap, bootstrap_runtime, console
 
 app = typer.Typer(
     name="hirehuntpilot",
@@ -448,10 +448,10 @@ def doctor() -> None:
 @app.command("telegram")
 def telegram_bot() -> None:
     """Start the Telegram bot for remote pipeline control."""
-    bootstrap()
+    bootstrap_runtime()
     from hirehuntpilot.telegram_bot import main as telegram_main
 
-    telegram_main()
+    telegram_main(should_load_env=False)
 
 
 @app.command("start")

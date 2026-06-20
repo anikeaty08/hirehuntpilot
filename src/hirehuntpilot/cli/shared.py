@@ -24,3 +24,11 @@ def bootstrap() -> None:
     load_env()
     ensure_dirs()
     init_db()
+
+
+def bootstrap_runtime() -> None:
+    """Light bootstrap for commands that do not require immediate DB access."""
+    from hirehuntpilot.config import ensure_dirs, load_env
+
+    load_env()
+    ensure_dirs()
