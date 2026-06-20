@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from hirehuntpilot.config import RESUME_PATH, load_profile
 from hirehuntpilot.database import get_connection, get_jobs_by_stage
-from hirehuntpilot.llm import get_client
+from hirehuntpilot.llm import get_role_client
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def score_job(resume_text: str, job: dict) -> dict:
     ]
 
     try:
-        client = get_client()
+        client = get_role_client("scoring")
         response = client.chat(messages, max_tokens=512, temperature=0.2)
         return _parse_score_response(response)
     except Exception as e:

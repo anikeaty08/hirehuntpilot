@@ -1116,13 +1116,24 @@ def _write_model_config(provider: str, model: str) -> None:
     configs.insert(0, active)
     base["model_configs"] = configs
 
-    # Point all agent roles to 'default'
+    # Point all agent roles to 'default' while keeping generic fallback pools.
     base["agent_roles"] = {
+        "default": "default",
         "scoring": "default",
         "tailoring": "default",
         "cover_letter": "default",
         "apply_agent": "default",
         "telegram_router": "default",
+        "enrichment": "default",
+    }
+    base["agent_pools"] = {
+        "default": ["default", "ollama_default"],
+        "telegram_router": ["default", "groq_fast", "gemini_flash", "openai_mini", "anthropic_haiku", "ollama_default"],
+        "enrichment": ["default", "groq_fast", "gemini_flash", "openai_mini", "ollama_default"],
+        "scoring": ["default", "groq_reasoning", "gemini_flash", "openai_mini", "ollama_default"],
+        "tailoring": ["default", "groq_strong", "groq_reasoning", "gemini_flash", "openai_mini", "anthropic_haiku", "ollama_default"],
+        "cover_letter": ["default", "groq_reasoning", "gemini_flash", "openai_mini", "anthropic_haiku", "ollama_default"],
+        "apply_agent": ["default", "groq_reasoning", "gemini_flash", "openai_mini", "anthropic_haiku", "ollama_default"],
     }
 
     MODEL_CONFIG_PATH.write_text(json.dumps(base, indent=2), encoding="utf-8")

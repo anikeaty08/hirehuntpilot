@@ -39,12 +39,12 @@ class TelegramControlAgent:
     def __init__(self, model_config_name: str):
         self.model_config_name = model_config_name
         self.sessions = SessionStore()
+        self.role = "telegram_router"
 
     def _call_model(self, messages: list[dict]) -> str:
-        from hirehuntpilot.config import invoke_agentscope_model, load_agentscope_model
+        from hirehuntpilot.config import invoke_agentscope_role
 
-        model = load_agentscope_model(self.model_config_name)
-        response = invoke_agentscope_model(model, messages)
+        response = invoke_agentscope_role(self.role, messages, preferred=self.model_config_name)
         return (response.text or "").strip()
 
     def _decide(self, chat_id: int, user_message: str) -> dict:

@@ -1,6 +1,7 @@
 """hirehuntpilot configuration: paths, platform detection, user data."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import inspect
 import json
 import os
@@ -36,6 +37,7 @@ CONFIG_DIR = PACKAGE_DIR / "config"
 # The wizard writes the user's config here; falls back to the package template.
 MODEL_CONFIG_PATH = APP_DIR / "model_config.json"
 _PACKAGE_MODEL_CONFIG = CONFIG_DIR / "model_config.json"
+MODEL_RUNTIME_STATE_PATH = APP_DIR / "model_runtime_state.json"
 
 
 def get_chrome_path() -> str:
@@ -299,6 +301,126 @@ def load_model_config() -> dict:
     return json.loads(raw)
 
 
+def _read_model_runtime_state() -> dict[str, dict]:
+    if not MODEL_RUNTIME_STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(MODEL_RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_model_runtime_state(state: dict[str, dict]) -> None:
+    ensure_dirs()
+    MODEL_RUNTIME_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _extract_model_entry(config_name: str) -> dict | None:
+    cfg = load_model_config()
+    for item in cfg.get("model_configs", []):
+        if item.get("config_name") == config_name:
+            return item
+    return None
+
+
+def _model_has_credentials(entry: dict) -> bool:
+    model_type = str(entry.get("model_type", "openai_chat"))
+    api_key = str(entry.get("api_key", "")).strip()
+    client_args = entry.get("client_args", {}) or {}
+    base_url = str(client_args.get("base_url", "")).strip().lower()
+    if model_type in {"anthropic_chat", "gemini_chat"}:
+        return bool(api_key)
+    if "localhost" in base_url or "127.0.0.1" in base_url or "ollama" in model_type:
+        return bool(base_url)
+    return bool(api_key)
+
+
+def get_role_model_candidates(role: str, preferred: str | None = None) -> list[str]:
+    cfg = load_model_config()
+    pools: dict = cfg.get("agent_pools", {}) or {}
+    roles: dict = cfg.get("agent_roles", {}) or {}
+
+    configured = pools.get(role)
+    if configured is None:
+        configured = roles.get(role, roles.get("default", "default"))
+    if configured is None:
+        configured = pools.get("default", ["default"])
+
+    if isinstance(configured, str):
+        candidates = [configured]
+    else:
+        candidates = [str(item) for item in configured if str(item).strip()]
+
+    if preferred and preferred in candidates:
+        candidates.remove(preferred)
+        candidates.insert(0, preferred)
+
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return deduped or ["default"]
+
+
+def _cooldown_seconds_for_error(exc: Exception) -> int:
+    text = str(exc).lower()
+    if any(token in text for token in ("429", "rate limit", "quota", "too many requests", "rpd", "tpm", "rpm")):
+        return 15 * 60
+    if any(token in text for token in ("403", "access denied", "network settings")):
+        return 10 * 60
+    if any(token in text for token in ("invalid api key", "invalid token", "unauthorized", "authentication")):
+        return 60 * 60
+    if any(token in text for token in ("timeout", "timed out", "connecterror", "connecttimeout", "networkerror")):
+        return 2 * 60
+    return 5 * 60
+
+
+def record_model_failure(config_name: str, exc: Exception) -> None:
+    state = _read_model_runtime_state()
+    entry = state.get(config_name, {})
+    cooldown_seconds = _cooldown_seconds_for_error(exc)
+    entry["cooldown_until"] = (datetime.now(timezone.utc) + timedelta(seconds=cooldown_seconds)).isoformat()
+    entry["last_error"] = str(exc)[:500]
+    entry["failures"] = int(entry.get("failures", 0)) + 1
+    state[config_name] = entry
+    _write_model_runtime_state(state)
+
+
+def record_model_success(config_name: str) -> None:
+    state = _read_model_runtime_state()
+    entry = state.get(config_name, {})
+    entry["cooldown_until"] = None
+    entry["last_error"] = None
+    entry["last_success_at"] = datetime.now(timezone.utc).isoformat()
+    entry["failures"] = 0
+    state[config_name] = entry
+    _write_model_runtime_state(state)
+
+
+def get_available_model_candidates(role: str, preferred: str | None = None) -> list[str]:
+    raw_candidates = get_role_model_candidates(role, preferred=preferred)
+    state = _read_model_runtime_state()
+    now = datetime.now(timezone.utc)
+    ready: list[str] = []
+    cooling: list[str] = []
+
+    for candidate in raw_candidates:
+        entry = _extract_model_entry(candidate)
+        if not entry or not _model_has_credentials(entry):
+            continue
+        cooldown_until = state.get(candidate, {}).get("cooldown_until")
+        if cooldown_until:
+            try:
+                if datetime.fromisoformat(cooldown_until) > now:
+                    cooling.append(candidate)
+                    continue
+            except ValueError:
+                pass
+        ready.append(candidate)
+
+    return ready or cooling
+
+
 def get_agent_model(role: str) -> str:
     """Return the AgentScope config_name for a given agent role.
 
@@ -312,9 +434,8 @@ def get_agent_model(role: str) -> str:
     Returns:
         The config_name string that maps to a model_configs entry.
     """
-    cfg = load_model_config()
-    roles: dict = cfg.get("agent_roles", {})
-    return roles.get(role, roles.get("default", "default"))
+    candidates = get_available_model_candidates(role)
+    return candidates[0] if candidates else "default"
 
 
 def load_agentscope_model(config_name: str):
@@ -419,5 +540,22 @@ def invoke_agentscope_model(model, messages):
     if inspect.isawaitable(response):
         response = asyncio.run(response)
     return response
+
+
+def invoke_agentscope_role(role: str, messages, preferred: str | None = None):
+    candidates = get_available_model_candidates(role, preferred=preferred)
+    last_exc: Exception | None = None
+    for config_name in candidates:
+        try:
+            model = load_agentscope_model(config_name)
+            response = invoke_agentscope_model(model, messages)
+            record_model_success(config_name)
+            return response
+        except Exception as exc:
+            record_model_failure(config_name, exc)
+            last_exc = exc
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"No configured model candidates available for role '{role}'.")
 
 

@@ -8,7 +8,14 @@
       "client_args": {}
     },
     {
-      "config_name": "gemini",
+      "config_name": "openai_mini",
+      "model_type": "openai_chat",
+      "model_name": "gpt-4o-mini",
+      "api_key": "${OPENAI_API_KEY}",
+      "client_args": {}
+    },
+    {
+      "config_name": "gemini_flash",
       "model_type": "openai_chat",
       "model_name": "gemini-2.0-flash",
       "api_key": "${GEMINI_API_KEY}",
@@ -17,7 +24,25 @@
       }
     },
     {
-      "config_name": "groq",
+      "config_name": "groq_fast",
+      "model_type": "openai_chat",
+      "model_name": "llama-3.1-8b-instant",
+      "api_key": "${GROQ_API_KEY}",
+      "client_args": {
+        "base_url": "https://api.groq.com/openai/v1"
+      }
+    },
+    {
+      "config_name": "groq_reasoning",
+      "model_type": "openai_chat",
+      "model_name": "qwen/qwen3-32b",
+      "api_key": "${GROQ_API_KEY}",
+      "client_args": {
+        "base_url": "https://api.groq.com/openai/v1"
+      }
+    },
+    {
+      "config_name": "groq_strong",
       "model_type": "openai_chat",
       "model_name": "llama-3.3-70b-versatile",
       "api_key": "${GROQ_API_KEY}",
@@ -26,7 +51,7 @@
       }
     },
     {
-      "config_name": "ollama",
+      "config_name": "ollama_default",
       "model_type": "openai_chat",
       "model_name": "llama3.1:8b",
       "api_key": "ollama",
@@ -35,7 +60,7 @@
       }
     },
     {
-      "config_name": "anthropic",
+      "config_name": "anthropic_haiku",
       "model_type": "anthropic_chat",
       "model_name": "claude-3-5-haiku-latest",
       "api_key": "${ANTHROPIC_API_KEY}",
@@ -43,10 +68,21 @@
     }
   ],
   "agent_roles": {
+    "default": "default",
     "scoring": "default",
     "tailoring": "default",
     "cover_letter": "default",
     "apply_agent": "default",
-    "telegram_router": "default"
+    "telegram_router": "default",
+    "enrichment": "default"
+  },
+  "agent_pools": {
+    "default": ["default", "ollama_default"],
+    "telegram_router": ["default", "groq_fast", "gemini_flash", "openai_mini", "anthropic_haiku", "ollama_default"],
+    "enrichment": ["default", "groq_fast", "gemini_flash", "openai_mini", "ollama_default"],
+    "scoring": ["default", "groq_reasoning", "gemini_flash", "openai_mini", "ollama_default"],
+    "tailoring": ["default", "groq_strong", "groq_reasoning", "gemini_flash", "openai_mini", "anthropic_haiku", "ollama_default"],
+    "cover_letter": ["default", "groq_reasoning", "gemini_flash", "openai_mini", "anthropic_haiku", "ollama_default"],
+    "apply_agent": ["default", "groq_reasoning", "gemini_flash", "openai_mini", "anthropic_haiku", "ollama_default"]
   }
 }

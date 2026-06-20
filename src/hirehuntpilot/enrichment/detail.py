@@ -25,7 +25,7 @@ from playwright.sync_api import sync_playwright
 from hirehuntpilot import config
 from hirehuntpilot.config import DB_PATH
 from hirehuntpilot.database import get_connection, init_db, ensure_columns
-from hirehuntpilot.llm import get_client
+from hirehuntpilot.llm import get_role_client
 
 log = logging.getLogger(__name__)
 
@@ -493,7 +493,7 @@ def extract_with_llm(page, url: str) -> dict:
     )
 
     try:
-        client = get_client()
+        client = get_role_client("enrichment")
         t0 = time.time()
         raw = client.ask(prompt, temperature=0.0, max_tokens=4096)
         elapsed = time.time() - t0

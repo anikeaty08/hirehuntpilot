@@ -282,9 +282,13 @@ Rules:
     def _call_llm(self, messages: list[dict]) -> str:
         """Call the LLM via AgentScope using the dynamic config_name."""
         try:
-            from hirehuntpilot.config import invoke_agentscope_model, load_agentscope_model
-            model = load_agentscope_model(self.model_config_name)
-            response = invoke_agentscope_model(model, messages)
+            from hirehuntpilot.config import invoke_agentscope_role
+
+            response = invoke_agentscope_role(
+                "apply_agent",
+                messages,
+                preferred=self.model_config_name,
+            )
             return response.text or ""
         except Exception as exc:
             logger.error("LLM call failed: %s", exc)

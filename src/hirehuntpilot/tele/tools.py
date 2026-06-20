@@ -218,7 +218,7 @@ def run_apply(limit: int = 1, min_score: int = 7) -> str:
 
 
 def update_profile(instruction: str, model_config_name: str | None = None) -> str:
-    from hirehuntpilot.config import PROFILE_PATH, invoke_agentscope_model, load_agentscope_model
+    from hirehuntpilot.config import PROFILE_PATH, invoke_agentscope_role
 
     if not PROFILE_PATH.exists():
         return "Profile file not found."
@@ -234,8 +234,11 @@ The user gave this update command:
 Return the new, fully updated profile JSON (retaining all unchanged fields).
 Output ONLY valid JSON, no markdown fences, no explanation.
 """
-        model = load_agentscope_model(model_config_name or _router_model_name())
-        response = invoke_agentscope_model(model, [{"role": "user", "content": prompt}])
+        response = invoke_agentscope_role(
+            "telegram_router",
+            [{"role": "user", "content": prompt}],
+            preferred=model_config_name or _router_model_name(),
+        )
         text = (response.text or "").strip().strip("`").strip()
         if text.startswith("json"):
             text = text[4:].strip()
@@ -247,7 +250,7 @@ Output ONLY valid JSON, no markdown fences, no explanation.
 
 
 def update_resume(instruction: str, model_config_name: str | None = None) -> str:
-    from hirehuntpilot.config import RESUME_PATH, invoke_agentscope_model, load_agentscope_model
+    from hirehuntpilot.config import RESUME_PATH, invoke_agentscope_role
 
     if not RESUME_PATH.exists():
         return "Resume file not found."
@@ -263,8 +266,11 @@ The user wants to update it:
 Return the fully updated resume text. Retain all original formatting, content, and sections except for the requested changes.
 Output ONLY the new resume text, no explanation.
 """
-        model = load_agentscope_model(model_config_name or _router_model_name())
-        response = invoke_agentscope_model(model, [{"role": "user", "content": prompt}])
+        response = invoke_agentscope_role(
+            "telegram_router",
+            [{"role": "user", "content": prompt}],
+            preferred=model_config_name or _router_model_name(),
+        )
         text = (response.text or "").strip()
         RESUME_PATH.write_text(text, encoding="utf-8")
         return "Resume updated successfully."

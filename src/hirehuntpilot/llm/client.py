@@ -84,6 +84,30 @@ def _detect_provider() -> tuple[str, str, str, str]:
     )
 
 
+def _provider_tuple_from_model_entry(entry: dict) -> tuple[str, str, str, str]:
+    model_type = str(entry.get("model_type", "openai_chat"))
+    model_name = str(entry.get("model_name", "")).strip()
+    api_key = str(entry.get("api_key", "")).strip()
+    client_args = entry.get("client_args", {}) or {}
+    base_url = str(client_args.get("base_url", "")).strip()
+
+    if model_type == "anthropic_chat":
+        return "anthropic", _ANTHROPIC_BASE, model_name, api_key
+    if model_type == "gemini_chat":
+        return "gemini", base_url or _GEMINI_COMPAT_BASE, model_name, api_key
+
+    lowered = base_url.lower()
+    if "groq.com" in lowered:
+        return "groq", base_url or "https://api.groq.com/openai/v1", model_name, api_key
+    if "generativelanguage.googleapis.com" in lowered:
+        return "gemini", base_url or _GEMINI_COMPAT_BASE, model_name, api_key
+    if not base_url:
+        return "openai", "https://api.openai.com/v1", model_name, api_key
+    if any(token in lowered for token in ("localhost", "127.0.0.1", "0.0.0.0")):
+        return "local", base_url, model_name, api_key
+    return "openai", base_url, model_name, api_key
+
+
 class LLMClient:
     """Thin LLM client supporting Anthropic, Gemini, and OpenAI-compatible APIs."""
 
@@ -261,6 +285,42 @@ class _GeminiCompatForbidden(Exception):
 
 
 _instance: LLMClient | None = None
+_instances_by_name: dict[str, LLMClient] = {}
+
+
+class RoleLLMClient:
+    def __init__(self, role: str) -> None:
+        self.role = role
+
+    def _resolve_candidates(self) -> list[str]:
+        from hirehuntpilot.config import get_available_model_candidates
+
+        return get_available_model_candidates(self.role)
+
+    def chat(self, messages: list[dict], temperature: float = 0.0, max_tokens: int = 4096) -> str:
+        from hirehuntpilot.config import record_model_failure, record_model_success
+
+        candidates = self._resolve_candidates()
+        last_exc: Exception | None = None
+        for config_name in candidates:
+            try:
+                client = _get_client_for_config_name(config_name)
+                response = client.chat(messages, temperature=temperature, max_tokens=max_tokens)
+                record_model_success(config_name)
+                return response
+            except Exception as exc:
+                record_model_failure(config_name, exc)
+                last_exc = exc
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"No configured model candidates available for role '{self.role}'.")
+
+    def ask(self, prompt: str, **kwargs) -> str:
+        return self.chat([{"role": "user", "content": prompt}], **kwargs)
+
+    def close(self) -> None:
+        return None
 
 
 def get_client() -> LLMClient:
@@ -272,6 +332,33 @@ def get_client() -> LLMClient:
     return _instance
 
 
+def _get_client_for_config_name(config_name: str) -> LLMClient:
+    from hirehuntpilot.config import load_model_config
+
+    cached = _instances_by_name.get(config_name)
+    if cached is not None:
+        return cached
+
+    cfg = load_model_config()
+    match = None
+    for item in cfg.get("model_configs", []):
+        if item.get("config_name") == config_name:
+            match = item
+            break
+
+    if not match:
+        raise ValueError(f"Model config name '{config_name}' not found in model_config.json")
+
+    provider, base_url, model, api_key = _provider_tuple_from_model_entry(match)
+    client = LLMClient(provider, base_url, model, api_key)
+    _instances_by_name[config_name] = client
+    return client
+
+
+def get_role_client(role: str) -> RoleLLMClient:
+    return RoleLLMClient(role)
+
+
 def reset_client() -> None:
     global _instance
     if _instance is not None:
@@ -279,3 +366,9 @@ def reset_client() -> None:
             _instance.close()
         finally:
             _instance = None
+    for client in _instances_by_name.values():
+        try:
+            client.close()
+        except Exception:
+            pass
+    _instances_by_name.clear()

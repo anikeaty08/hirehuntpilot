@@ -18,7 +18,7 @@ from pathlib import Path
 
 from hirehuntpilot.config import RESUME_PATH, TAILORED_DIR, load_profile
 from hirehuntpilot.database import get_connection, get_jobs_by_stage
-from hirehuntpilot.llm import get_client
+from hirehuntpilot.llm import get_role_client
 from hirehuntpilot.scoring.validator import (
     BANNED_WORDS,
     FABRICATION_WATCHLIST,
@@ -325,7 +325,7 @@ def judge_tailored_resume(
         )},
     ]
 
-    client = get_client()
+    client = get_role_client("tailoring")
     response = client.chat(messages, max_tokens=512, temperature=0.1)
 
     passed = "VERDICT: PASS" in response.upper()
@@ -382,7 +382,7 @@ def tailor_resume(
     }
     avoid_notes: list[str] = []
     tailored = ""
-    client = get_client()
+    client = get_role_client("tailoring")
     tailor_prompt_base = _build_tailor_prompt(profile)
 
     for attempt in range(max_retries + 1):
