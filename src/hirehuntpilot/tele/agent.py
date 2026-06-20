@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
-import inspect
-import logging
 import json
+import logging
 
 from hirehuntpilot.tele.state import SessionStore
 from hirehuntpilot.tele.tools import TOOLS, tool_specs
@@ -43,12 +41,10 @@ class TelegramControlAgent:
         self.sessions = SessionStore()
 
     def _call_model(self, messages: list[dict]) -> str:
-        from hirehuntpilot.config import load_agentscope_model
+        from hirehuntpilot.config import invoke_agentscope_model, load_agentscope_model
 
         model = load_agentscope_model(self.model_config_name)
-        response = model(messages)
-        if inspect.isawaitable(response):
-            response = asyncio.run(response)
+        response = invoke_agentscope_model(model, messages)
         return (response.text or "").strip()
 
     def _decide(self, chat_id: int, user_message: str) -> dict:

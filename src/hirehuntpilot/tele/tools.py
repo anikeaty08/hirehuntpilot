@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import inspect
 import json
 import os
 from dataclasses import dataclass
@@ -220,7 +218,7 @@ def run_apply(limit: int = 1, min_score: int = 7) -> str:
 
 
 def update_profile(instruction: str, model_config_name: str | None = None) -> str:
-    from hirehuntpilot.config import PROFILE_PATH, load_agentscope_model
+    from hirehuntpilot.config import PROFILE_PATH, invoke_agentscope_model, load_agentscope_model
 
     if not PROFILE_PATH.exists():
         return "Profile file not found."
@@ -237,9 +235,7 @@ Return the new, fully updated profile JSON (retaining all unchanged fields).
 Output ONLY valid JSON, no markdown fences, no explanation.
 """
         model = load_agentscope_model(model_config_name or _router_model_name())
-        response = model([{"role": "user", "content": prompt}])
-        if inspect.isawaitable(response):
-            response = asyncio.run(response)
+        response = invoke_agentscope_model(model, [{"role": "user", "content": prompt}])
         text = (response.text or "").strip().strip("`").strip()
         if text.startswith("json"):
             text = text[4:].strip()
@@ -251,7 +247,7 @@ Output ONLY valid JSON, no markdown fences, no explanation.
 
 
 def update_resume(instruction: str, model_config_name: str | None = None) -> str:
-    from hirehuntpilot.config import RESUME_PATH, load_agentscope_model
+    from hirehuntpilot.config import RESUME_PATH, invoke_agentscope_model, load_agentscope_model
 
     if not RESUME_PATH.exists():
         return "Resume file not found."
@@ -268,9 +264,7 @@ Return the fully updated resume text. Retain all original formatting, content, a
 Output ONLY the new resume text, no explanation.
 """
         model = load_agentscope_model(model_config_name or _router_model_name())
-        response = model([{"role": "user", "content": prompt}])
-        if inspect.isawaitable(response):
-            response = asyncio.run(response)
+        response = invoke_agentscope_model(model, [{"role": "user", "content": prompt}])
         text = (response.text or "").strip()
         RESUME_PATH.write_text(text, encoding="utf-8")
         return "Resume updated successfully."

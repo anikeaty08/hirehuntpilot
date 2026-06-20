@@ -1,5 +1,8 @@
 """hirehuntpilot configuration: paths, platform detection, user data."""
 
+import asyncio
+import inspect
+import json
 import os
 import platform
 import shutil
@@ -388,5 +391,33 @@ def load_agentscope_model(config_name: str):
             kwargs["client_kwargs"] = clean_kwargs
 
     return model_class(credential=credential, model=model_name, **kwargs)
+
+
+def invoke_agentscope_model(model, messages):
+    """Invoke an AgentScope model with OpenAI-style dict messages or Msg objects."""
+    payload = messages
+    if messages and isinstance(messages[0], dict):
+        from agentscope.message import Msg
+        from agentscope.message._block import TextBlock
+
+        payload = []
+        for index, message in enumerate(messages):
+            role = str(message.get("role") or "user")
+            name = str(message.get("name") or role or f"msg_{index}")
+            content = message.get("content", "")
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False)
+            payload.append(
+                Msg(
+                    name=name,
+                    role=role,
+                    content=[TextBlock(text=content)],
+                )
+            )
+
+    response = model(payload)
+    if inspect.isawaitable(response):
+        response = asyncio.run(response)
+    return response
 
 

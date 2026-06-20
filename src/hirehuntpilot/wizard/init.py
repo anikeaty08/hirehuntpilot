@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
 import typer
@@ -44,6 +45,71 @@ _MODEL_PRESETS: dict[str, list[str]] = {
     "gemini": ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
     "local": ["llama3.1:8b", "qwen2.5:7b", "local-model"],
 }
+
+_PROVIDER_CHOICES = ["anthropic", "groq", "openai", "gemini", "local"]
+
+
+def _read_single_key() -> str:
+    if os.name == "nt":
+        import msvcrt
+
+        first = msvcrt.getwch()
+        if first in ("\x00", "\xe0"):
+            second = msvcrt.getwch()
+            return first + second
+        return first
+
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        first = sys.stdin.read(1)
+        if first == "\x1b":
+            second = sys.stdin.read(1)
+            third = sys.stdin.read(1)
+            return first + second + third
+        return first
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def _interactive_select(title: str, options: list[str], *, default_index: int = 0, help_text: str | None = None) -> str:
+    if not options:
+        raise ValueError("Selection requires at least one option.")
+
+    if not sys.stdin.isatty() or os.environ.get("TERM") == "dumb":
+        return Prompt.ask(title, choices=options, default=options[max(0, min(default_index, len(options) - 1))])
+
+    index = max(0, min(default_index, len(options) - 1))
+
+    while True:
+        console.print()
+        console.print(f"[bold bright_cyan]{title}[/bold bright_cyan]")
+        if help_text:
+            console.print(f"[dim]{help_text}[/dim]")
+        console.print("[dim]Use Up/Down arrows, Enter to select, q to cancel.[/dim]")
+        console.print()
+
+        for i, option in enumerate(options):
+            if i == index:
+                console.print(f"[bold green]> {option}[/bold green]")
+            else:
+                console.print(f"  {option}")
+
+        key = _read_single_key()
+        if key in ("\r", "\n"):
+            return options[index]
+        if key.lower() == "q":
+            raise typer.Exit(code=1)
+        if key in ("\x00H", "\xe0H", "\x1b[A"):
+            index = (index - 1) % len(options)
+        elif key in ("\x00P", "\xe0P", "\x1b[B"):
+            index = (index + 1) % len(options)
+
+        console.clear()
 
 
 def _step_panel(step: str, title: str, body: str, border_style: str = "bright_blue") -> Panel:
@@ -203,6 +269,42 @@ def _detect_openai_compatible_models(base_url: str, api_key: str = "") -> list[s
         if model_id:
             models.append(model_id)
     return models
+
+
+def _detect_provider_models(provider: str, env_values: dict[str, str], secrets: dict[str, str]) -> list[str]:
+    import httpx
+
+    if provider == "local":
+        return _detect_openai_compatible_models(env_values.get("LLM_URL", ""), secrets.get("LLM_API_KEY", ""))
+
+    if provider == "groq":
+        return _detect_openai_compatible_models("https://api.groq.com/openai/v1", secrets.get("GROQ_API_KEY", ""))
+
+    if provider == "openai":
+        return _detect_openai_compatible_models("https://api.openai.com/v1", secrets.get("OPENAI_API_KEY", ""))
+
+    if provider == "gemini":
+        return _detect_openai_compatible_models("https://generativelanguage.googleapis.com/v1beta/openai", secrets.get("GEMINI_API_KEY", ""))
+
+    if provider == "anthropic":
+        headers = {
+            "x-api-key": secrets.get("ANTHROPIC_API_KEY", ""),
+            "anthropic-version": "2023-06-01",
+        }
+        try:
+            resp = httpx.get("https://api.anthropic.com/v1/models", headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            return []
+        models: list[str] = []
+        for item in data.get("data", []) or []:
+            model_id = str(item.get("id") or "").strip()
+            if model_id:
+                models.append(model_id)
+        return models
+
+    return []
 
 
 def _verify_ai_candidate(
@@ -846,18 +948,11 @@ def _setup_ai_features() -> None:
         console.print("[dim]Discovery-only mode. You can configure AI later with [bold]hirehuntpilot init[/bold].[/dim]")
         return
 
-    provider_table = Text()
-    provider_table.append("Available providers\n", style="bold bright_white")
-    provider_table.append("  - anthropic\n", style="cyan")
-    provider_table.append("  - groq\n", style="magenta")
-    provider_table.append("  - openai\n", style="green")
-    provider_table.append("  - gemini\n", style="yellow")
-    provider_table.append("  - local", style="bright_blue")
-    console.print(Panel(provider_table, border_style="bright_magenta", padding=(1, 2)))
-    provider = Prompt.ask(
+    provider = _interactive_select(
         "Provider",
-        choices=["anthropic", "groq", "openai", "gemini", "local"],
-        default="groq",
+        _PROVIDER_CHOICES,
+        default_index=_PROVIDER_CHOICES.index("groq"),
+        help_text="Choose the provider to verify and save.",
     )
 
     env_values = _read_env_lines()
@@ -902,8 +997,8 @@ def _setup_ai_features() -> None:
         local_key = Prompt.ask("Local API key (optional)", default="")
         if local_key:
             secrets["LLM_API_KEY"] = local_key
-        detected_models = _detect_openai_compatible_models(env_values["LLM_URL"], local_key)
 
+    detected_models = _detect_provider_models(provider, env_values, secrets)
     probe_model = detected_models[0] if detected_models else _MODEL_PRESETS[provider][0]
     _info_line(f"Verifying {provider} access with '{probe_model}' before saving anything...")
     if not _verify_ai_candidate(provider, probe_model, env_values, secrets):
@@ -911,11 +1006,26 @@ def _setup_ai_features() -> None:
 
     presets = detected_models or _MODEL_PRESETS[provider]
     model_text = Text()
-    model_text.append(f"Suggested models for {provider}\n", style="bold bright_white")
+    model_text.append(f"Available models for {provider}\n", style="bold bright_white")
     for preset in presets[:8]:
         model_text.append(f"  * {preset}\n", style="bright_cyan")
     console.print(Panel(model_text, border_style="bright_cyan", padding=(1, 2)))
-    model = Prompt.ask("Model", default=presets[0])
+    model_options = list(dict.fromkeys(presets))
+    if "Custom model..." not in model_options:
+        model_options.append("Custom model...")
+    selected_model = _interactive_select(
+        "Model",
+        model_options,
+        default_index=0,
+        help_text="Detected from the provider when available. Choose a custom value only if needed.",
+    )
+    if selected_model == "Custom model...":
+        model = Prompt.ask("Custom model", default=presets[0]).strip()
+        if not model:
+            _error_line("A model name is required.")
+            raise typer.Exit(code=1)
+    else:
+        model = selected_model
     env_values["LLM_MODEL"] = model
 
     _info_line(f"Verifying final model selection '{model}'...")
