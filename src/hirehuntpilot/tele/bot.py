@@ -12,6 +12,21 @@ from hirehuntpilot.tele.agent import TelegramControlAgent
 logger = logging.getLogger(__name__)
 
 
+def _parse_allowed_chat_id(raw_value: str) -> int | None:
+    value = (raw_value or "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Ignoring invalid TELEGRAM_CHAT_ID value: %r", value)
+        print(
+            "WARN: TELEGRAM_CHAT_ID is not a valid numeric chat id. "
+            "Starting Telegram bot without chat restriction."
+        )
+        return None
+
+
 class HireHuntTelegramBot:
     def __init__(
         self,
@@ -100,8 +115,7 @@ def main():
         print("ERROR: TELEGRAM_BOT_TOKEN not set. Run 'hirehuntpilot init telegram' to configure.")
         raise SystemExit(1)
 
-    allowed_chat_id_str = os.environ.get("TELEGRAM_CHAT_ID", "")
-    allowed_chat_id = int(allowed_chat_id_str) if allowed_chat_id_str.strip() else None
+    allowed_chat_id = _parse_allowed_chat_id(os.environ.get("TELEGRAM_CHAT_ID", ""))
     model_config_name = config.get_agent_model("telegram_router")
     bot = HireHuntTelegramBot(
         token=token,

@@ -1052,6 +1052,12 @@ def _setup_telegram() -> None:
         "Your Telegram Chat ID (optional — restricts access to only you)",
         default="",
     ).strip()
+    if chat_id:
+        try:
+            int(chat_id)
+        except ValueError:
+            _warn_line("Telegram Chat ID must be numeric. Skipping chat restriction for now.")
+            chat_id = ""
 
     from hirehuntpilot.secrets import set_secret
     set_secret("TELEGRAM_BOT_TOKEN", token)
