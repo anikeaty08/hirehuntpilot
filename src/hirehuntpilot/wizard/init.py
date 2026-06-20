@@ -34,6 +34,7 @@ from hirehuntpilot.config import (
     _PACKAGE_MODEL_CONFIG,
     ensure_dirs,
 )
+from hirehuntpilot.resume import extract_resume_artifact, load_resume_text
 from hirehuntpilot.secrets import delete_secret, set_secret
 
 console = Console()
@@ -345,9 +346,7 @@ def _verify_ai_candidate(
 
 
 def _read_resume_text() -> str:
-    if not RESUME_PATH.exists():
-        return ""
-    return RESUME_PATH.read_text(encoding="utf-8-sig", errors="ignore")
+    return load_resume_text(RESUME_PATH, RESUME_PDF_PATH if RESUME_PDF_PATH.exists() else None)
 
 
 def _extract_contact_block(resume_text: str) -> dict:
@@ -373,6 +372,19 @@ def _extract_contact_block(resume_text: str) -> dict:
     if github_match:
         github = github_match.group(1)
 
+    invalid_website_tokens = {
+        "next.js",
+        "react",
+        "fastapi",
+        "node.js",
+        "mongodb",
+        "docker",
+        "linux",
+        "python",
+        "javascript",
+        "typescript",
+    }
+
     for raw_line in resume_text.splitlines():
         line = raw_line.strip()
         if not line or "@" in line:
@@ -385,6 +397,10 @@ def _extract_contact_block(resume_text: str) -> dict:
         if "linkedin.com" in lowered or "github.com" in lowered:
             continue
         if lowered.endswith(("gmail.com", "yahoo.com", "outlook.com", "hotmail.com")):
+            continue
+        if lowered in invalid_website_tokens:
+            continue
+        if "/" not in candidate and not candidate.startswith("http"):
             continue
         website = candidate
         break
@@ -427,7 +443,10 @@ def _fallback_profile_from_resume(resume_text: str) -> dict:
     known_frameworks = ["React", "Next.js", "FastAPI", "Node.js", "Django", "Flask", "PyTorch", "TensorFlow"]
     known_tools = ["Docker", "AWS", "Git", "MongoDB", "PostgreSQL", "Linux", "Hardhat", "Polygon"]
     lower_text = resume_text.lower()
-    skills["programming_languages"] = [item for item in known_languages if item.lower() in lower_text]
+    def _mentioned(token: str) -> bool:
+        return re.search(rf"(?<![A-Za-z0-9]){re.escape(token.lower())}(?![A-Za-z0-9])", lower_text) is not None
+
+    skills["programming_languages"] = [item for item in known_languages if _mentioned(item)]
     skills["frameworks"] = [item for item in known_frameworks if item.lower() in lower_text]
     skills["tools"] = [item for item in known_tools if item.lower() in lower_text]
 
@@ -529,7 +548,11 @@ Return ONLY valid JSON with this exact top-level shape:
 Rules:
 - Use only facts present in the resume.
 - Leave fields blank if unknown.
-- Infer a reasonable target_role from the resume headline and projects.
+- Infer a reasonable target_role conservatively from the resume headline and projects.
+- Do not bias the profile toward Python, backend, or any other stack unless the resume clearly supports it.
+- If the candidate looks early-career or student-level, keep the title neutral rather than inflating seniority.
+- Only set website_url or portfolio_url if the resume contains an actual website or portfolio URL. Technology names are not URLs.
+- Only include skills that are explicitly present in the resume text.
 - Keep booleans conservative: if sponsorship/work authorization is unknown, set legally_authorized_to_work=true and require_sponsorship=false.
 - Do not add markdown fences or commentary."""
     raw = get_client().chat(
@@ -540,7 +563,55 @@ Rules:
         temperature=0.0,
         max_tokens=1800,
     )
-    return json.loads(raw)
+    return _extract_json_object(raw)
+
+
+def _verify_profile_with_llm(profile: dict, resume_text: str) -> dict:
+    from hirehuntpilot.llm import get_client
+
+    prompt = """You are verifying a candidate profile JSON against extracted resume text.
+
+Return ONLY corrected JSON with the same schema.
+
+Rules:
+- Remove false positives.
+- Do not invent missing facts.
+- Keep the role inference conservative and unbiased.
+- If a field is not explicitly supported by the resume, blank it out.
+- website_url and portfolio_url must be real URLs from the resume, not technology names.
+- Keep only explicit skills from the resume.
+"""
+    raw = get_client().chat(
+        [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"RESUME TEXT:\n{resume_text[:12000]}\n\n"
+                    f"PROFILE JSON:\n{json.dumps(profile, ensure_ascii=False)}"
+                ),
+            },
+        ],
+        temperature=0.0,
+        max_tokens=2200,
+    )
+    return _extract_json_object(raw)
+
+
+def _extract_json_object(raw: str) -> dict:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(text[start:end + 1])
+    raise ValueError("No valid JSON object found in model response")
 
 
 def _build_profile_from_resume(ai_enabled: bool) -> dict:
@@ -552,7 +623,8 @@ def _build_profile_from_resume(ai_enabled: bool) -> dict:
     if ai_enabled:
         try:
             profile = _llm_profile_from_resume(resume_text)
-            _success_line("Profile draft generated from your resume using the configured AI provider.")
+            profile = _verify_profile_with_llm(profile, resume_text)
+            _success_line("Profile draft generated and verified from your resume using the configured AI provider.")
             return profile
         except Exception as exc:
             _warn_line(f"AI profile extraction failed. Falling back to heuristic parsing. ({exc})")
@@ -577,21 +649,17 @@ def _generate_search_config_from_profile(profile: dict) -> None:
     lower_role = target_role.lower()
 
     queries = [target_role]
-    if "backend" not in lower_role and any(
-        keyword in lower_role for keyword in ("api", "platform", "server", "full stack", "full-stack")
-    ):
-        queries.append("Backend Engineer")
-    if "engineer" not in lower_role and "developer" not in lower_role:
-        queries.append("Software Engineer")
-    if "full stack" in lower_role or "full-stack" in lower_role:
-        queries.append("Full Stack Engineer")
+    current_title = (experience.get("current_title") or "").strip()
+    if current_title and current_title.lower() != lower_role:
+        queries.append(current_title)
 
     frameworks = [item for item in skills.get("frameworks", []) if item]
-    languages = [item for item in skills.get("programming_languages", []) if item]
-    if any("fastapi" == item.lower() for item in frameworks):
-        queries.insert(1, "FastAPI Developer")
-    if any(item.lower() == "python" for item in languages) and "python" in lower_role:
-        queries.append("Python Developer")
+    if any(item.lower() in {"react", "next.js"} for item in frameworks):
+        queries.append("Full Stack Developer")
+    elif any(item.lower() in {"fastapi", "node.js", "django", "flask"} for item in frameworks):
+        queries.append("Software Developer")
+    elif "engineer" not in lower_role and "developer" not in lower_role:
+        queries.append("Software Engineer")
 
     deduped_queries: list[str] = []
     for item in queries:
@@ -609,9 +677,7 @@ def _generate_search_config_from_profile(profile: dict) -> None:
         "",
         "locations:",
         f'  - location: "{city}"',
-        "    remote: false",
-        '  - location: "Remote"',
-        "    remote: true",
+        f"    remote: {'true' if city.lower() == 'remote' else 'false'}",
         "",
         "sources:",
         "  - linkedin",
@@ -654,13 +720,14 @@ def _setup_resume() -> None:
     """Prompt for resume file and copy into APP_DIR."""
     console.print(
         _step_panel(
-            "Step 1",
+            "Step 3",
             "Resume",
-            "Point to your master resume file. Supported formats: .txt or .pdf",
+            "Point to your master resume file. Supported formats: .txt or .pdf. "
+            "PDF files are extracted into resume.txt automatically when possible.",
             border_style="magenta",
         )
     )
-    _info_line("Tip: a plain .txt resume gives the best results for scoring and tailoring.")
+    _info_line("Tip: a plain .txt resume is still the cleanest input, but PDF extraction now runs automatically.")
 
     while True:
         path_str = Prompt.ask("Resume file path")
@@ -681,19 +748,25 @@ def _setup_resume() -> None:
         elif suffix == ".pdf":
             shutil.copy2(src, RESUME_PDF_PATH)
             _success_line(f"Copied to {RESUME_PDF_PATH}")
-
-            # Also ask for a plain-text version for LLM consumption
-            txt_path_str = Prompt.ask(
-                "Plain-text version of your resume (.txt)",
-                default="",
-            )
-            if txt_path_str.strip():
-                txt_src = Path(txt_path_str.strip().strip('"').strip("'")).expanduser().resolve()
-                if txt_src.exists():
-                    shutil.copy2(txt_src, RESUME_PATH)
-                    _success_line(f"Copied to {RESUME_PATH}")
-                else:
-                    _warn_line("Plain-text file not found. Skipping .txt copy.")
+            try:
+                use_llm_cleanup = bool(_read_env_lines().get("LLM_PROVIDER"))
+                result = extract_resume_artifact(src, use_llm_cleanup=use_llm_cleanup)
+                RESUME_PATH.write_text(result.cleaned_text, encoding="utf-8")
+                _success_line(f"Extracted text to {RESUME_PATH} using {result.extraction_method}")
+                if result.ocr_used:
+                    _info_line("OCR fallback was used for at least part of the PDF extraction.")
+                for warning in result.warnings[:3]:
+                    _warn_line(warning)
+            except Exception as exc:
+                _warn_line(f"Automatic PDF extraction failed: {exc}")
+                txt_path_str = Prompt.ask("Optional plain-text version of your resume (.txt)", default="")
+                if txt_path_str.strip():
+                    txt_src = Path(txt_path_str.strip().strip('"').strip("'")).expanduser().resolve()
+                    if txt_src.exists():
+                        shutil.copy2(txt_src, RESUME_PATH)
+                        _success_line(f"Copied to {RESUME_PATH}")
+                    else:
+                        _warn_line("Plain-text file not found. Skipping .txt copy.")
         break
 
 
@@ -713,7 +786,7 @@ def _setup_profile() -> dict:
     """Walk through profile questions and return a nested profile dict."""
     console.print(
         _step_panel(
-            "Step 2",
+            "Step 4",
             "Profile",
             "Tell hirehuntpilot about yourself. This powers scoring, tailoring, and auto-fill.",
             border_style="cyan",
@@ -850,7 +923,7 @@ def _setup_searches() -> None:
     """Generate a searches.yaml from user input."""
     console.print(
         _step_panel(
-            "Step 3",
+            "Step 5",
             "Job Search Config",
             "Define the locations, titles, and sources you want HireHuntPilot to crawl.",
             border_style="yellow",
@@ -936,7 +1009,7 @@ def _setup_ai_features() -> None:
     """Ask about AI scoring/tailoring - optional LLM configuration."""
     console.print(
         _step_panel(
-            "Step 2",
+            "Step 1",
             "AI Features",
             "An AI model powers job scoring, resume tailoring, and cover letters. "
             "Without it, you can still discover and enrich jobs.",
@@ -1147,7 +1220,7 @@ def _setup_telegram() -> None:
     """Configure the Telegram bot for remote pipeline control."""
     console.print(
         _step_panel(
-            "Step 6",
+            "Step 7",
             "Telegram Control Center",
             "Control HireHuntPilot remotely from Telegram. Send natural-language "
             "commands like 'find Python jobs in London' or 'apply to top 5 jobs'.",
@@ -1206,7 +1279,7 @@ def _setup_auto_apply() -> None:
     """Configure the AgentScope-powered autonomous job application agent."""
     console.print(
         _step_panel(
-            "Step 5",
+            "Step 6",
             "Auto-Apply Agent",
             "HireHuntPilot can fill and submit job applications automatically using "
             "an AI browser agent (no Claude Code CLI required).",
@@ -1263,14 +1336,7 @@ def run_wizard(advanced: bool = False, refresh_existing: bool = False) -> None:
     ensure_dirs()
     console.print(f"[dim]Created {APP_DIR}[/dim]\n")
 
-    # Step 1: Resume
-    if RESUME_PATH.exists() and not refresh_existing:
-        _info_line(f"Keeping existing resume at {RESUME_PATH}. Use `hirehuntpilot init resume --replace` to change it.")
-    else:
-        _setup_resume()
-    console.print()
-
-    # Step 2: AI features (optional LLM)
+    # Step 1: AI features (optional LLM)
     from hirehuntpilot.config import load_env
 
     load_env()
@@ -1281,7 +1347,14 @@ def run_wizard(advanced: bool = False, refresh_existing: bool = False) -> None:
         _setup_ai_features()
     console.print()
 
-    # Step 3: Profile
+    # Step 3: Resume
+    if RESUME_PATH.exists() and not refresh_existing:
+        _info_line(f"Keeping existing resume at {RESUME_PATH}. Use `hirehuntpilot init resume --replace` to change it.")
+    else:
+        _setup_resume()
+    console.print()
+
+    # Step 4: Profile
     profile = _load_profile()
     if PROFILE_PATH.exists() and not refresh_existing:
         _info_line(f"Keeping existing profile at {PROFILE_PATH}. Use `hirehuntpilot init profile` to rebuild it.")
@@ -1290,7 +1363,7 @@ def run_wizard(advanced: bool = False, refresh_existing: bool = False) -> None:
     else:
         console.print(
             _step_panel(
-                "Step 3",
+                "Step 4",
                 "Profile Draft",
                 "HireHuntPilot will create your profile from the resume you provided. "
                 "This replaces the long manual form.",
@@ -1302,7 +1375,7 @@ def run_wizard(advanced: bool = False, refresh_existing: bool = False) -> None:
         _save_generated_profile(profile)
     console.print()
 
-    # Step 4: Search Config
+    # Step 5: Search Config
     if SEARCH_CONFIG_PATH.exists() and not refresh_existing:
         _info_line(
             f"Keeping existing search config at {SEARCH_CONFIG_PATH}. "
@@ -1314,7 +1387,7 @@ def run_wizard(advanced: bool = False, refresh_existing: bool = False) -> None:
     else:
         console.print(
             _step_panel(
-                "Step 4",
+                "Step 5",
                 "Search Config",
                 "Search queries and locations are inferred from your resume profile. "
                 "You can edit searches.yaml later if you want to refine them.",
@@ -1325,14 +1398,14 @@ def run_wizard(advanced: bool = False, refresh_existing: bool = False) -> None:
         _show_search_summary()
     console.print()
 
-    # Step 5: Auto-apply (AgentScope browser agent)
+    # Step 6: Auto-apply (AgentScope browser agent)
     if refresh_existing or not os.environ.get("CAPSOLVER_API_KEY"):
         _setup_auto_apply()
     else:
         _info_line("Auto-apply prerequisites already configured. Use `hirehuntpilot init auto-apply` to revisit them.")
     console.print()
 
-    # Step 6: Telegram bot (optional remote control)
+    # Step 7: Telegram bot (optional remote control)
     tg_configured, tg_info = check_telegram()
     if tg_configured and not refresh_existing:
         _info_line(f"Keeping existing Telegram setup ({tg_info}). Use `hirehuntpilot init telegram --force` to change it.")
